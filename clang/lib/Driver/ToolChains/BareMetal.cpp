@@ -2,6 +2,7 @@
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
+// Some modifications Copyright (c) QNX Software and licensed same.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
@@ -83,6 +84,16 @@ void BareMetal::AddClangSystemIncludeArgs(const ArgList &DriverArgs,
 
   if (!DriverArgs.hasArg(options::OPT_nostdlibinc)) {
     SmallString<128> Dir(getDriver().SysRoot);
+    if (Dir.empty()) {
+      // Try the install root
+      Dir = getDriver().getInstalledDir();
+      Dir = llvm::sys::path::parent_path(Dir);
+      StringRef target = DriverArgs.getLastArgValue(options::OPT_target);
+      if (!target.empty()) {
+        // Followed by the target name
+        llvm::sys::path::append(Dir, target);
+      }
+    }
     llvm::sys::path::append(Dir, "include");
     addSystemInclude(DriverArgs, CC1Args, Dir.str());
   }

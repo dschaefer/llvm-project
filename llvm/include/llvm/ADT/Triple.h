@@ -2,6 +2,7 @@
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
+// Some modifications Copyright (c) QNX Software and licensed same.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
@@ -90,6 +91,7 @@ public:
     kalimba,        // Kalimba: generic kalimba
     shave,          // SHAVE: Movidius vector VLIW processors
     lanai,          // Lanai: Lanai 32-bit
+    xtensa,         // Xtensa lx series for ESP32
     wasm32,         // WebAssembly with 32-bit pointers
     wasm64,         // WebAssembly with 64-bit pointers
     renderscript32, // 32-bit RenderScript
@@ -184,6 +186,7 @@ public:
     Contiki,
     AMDPAL,     // AMD PAL Runtime
     HermitCore, // HermitCore Unikernel/Multikernel
+    QNXNTO,
     Hurd,       // GNU/Hurd
     WASI,       // Experimental WebAssembly OS
     LastOSType = WASI

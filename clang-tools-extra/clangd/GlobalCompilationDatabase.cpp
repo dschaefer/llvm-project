@@ -2,6 +2,7 @@
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
+// Some modifications Copyright (c) QNX Software and licensed same.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
@@ -13,7 +14,12 @@
 #include "clang/Tooling/CompilationDatabase.h"
 #include "llvm/ADT/Optional.h"
 #include "llvm/Support/FileSystem.h"
+#include "llvm/Support/FileUtilities.h"
+#include "llvm/Support/LineIterator.h"
+#include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/Path.h"
+#include "llvm/Support/Program.h"
+#include "llvm/Support/Regex.h"
 
 namespace clang {
 namespace clangd {
@@ -126,6 +132,116 @@ DirectoryBasedGlobalCompilationDatabase::getCDBForFile(
   if (CDB && !Cached)
     OnCommandChanged.broadcast(CDB->getAllFiles());
   return CDB;
+}
+
+GCCDirectoryBasedGlobalCompilationDatabase::
+  GCCDirectoryBasedGlobalCompilationDatabase(
+    llvm::Optional<Path> CompileCommandsDir)
+  : DirectoryBasedGlobalCompilationDatabase(CompileCommandsDir) {}
+
+std::string
+GCCDirectoryBasedGlobalCompilationDatabase::getTarget(std::vector<std::string> CommandLine) const {
+  StringRef CompileCommand(CommandLine.front());
+  std::string RealCommand(CompileCommand);
+  llvm::Regex QCCRegex("^(.*)(qcc|QCC)(.exe)?");
+  llvm::SmallVector<StringRef, 3> QCCMatches;
+  if (QCCRegex.match(CompileCommand, &QCCMatches)) {
+    auto VargFind = std::find_if(CommandLine.begin() + 1, CommandLine.end(), [](std::string &arg) {
+      return llvm::StringRef(arg).startswith("-V");
+    });
+    if (VargFind != CommandLine.end()) {
+      llvm::Regex Regex("^-V((.*),)?gcc_(.*)$");
+      llvm::SmallVector<StringRef, 5> Matches;
+      if (Regex.match(*VargFind, &Matches)) {
+        StringRef prefix = Matches[3];
+        prefix.consume_back("le");
+        prefix.consume_back("_cpp");
+        prefix.consume_back("_gpp");
+
+        RealCommand = QCCMatches[1];
+        RealCommand += prefix;
+        if (!Matches[2].empty()) {
+          RealCommand += "-";
+          RealCommand += Matches[2];
+        }
+        RealCommand += "-gcc";
+      }
+    }
+  }
+
+  llvm::SmallString<256> out;
+  std::error_code err = llvm::sys::fs::createTemporaryFile("clangd_target", "txt", out);
+  if (err) {
+    llvm::errs() << "target: Error creating temp file: " << err.message() << "\n";
+    return "";
+  }
+  llvm::FileRemover outRemover(out);
+
+  Optional<StringRef> Redirects[] = {
+    llvm::None,
+    llvm::None,
+    StringRef(out)
+  };
+
+  std::vector<llvm::StringRef> args;
+  args.push_back(RealCommand);
+  args.push_back("-v");
+
+  std::string ErrMsg;
+  int rc = llvm::sys::ExecuteAndWait(RealCommand, args, None, Redirects, 0, 0, &ErrMsg);
+  if (rc) {
+    llvm::errs() << "target: execution failed (" << rc << ") " << ErrMsg << "\n";
+    return "";
+  }
+
+  auto targetBuffer = llvm::MemoryBuffer::getFile(out);
+  if (!targetBuffer) {
+    llvm::errs() << "target: error opening " << out << ":" << targetBuffer.getError().message() << "\n";
+    return "";
+  }
+
+  for (llvm::line_iterator line(*targetBuffer.get()); !line.is_at_eof(); line++) {
+    StringRef target = *line;
+    if (target.consume_front("Target: ")) {
+      return target;
+    }
+  }
+
+  return "";
+}
+
+// Adds the -target flag
+llvm::Optional<tooling::CompileCommand>
+GCCDirectoryBasedGlobalCompilationDatabase::getCompileCommand(PathRef File, ProjectInfo *) const {
+  auto command = DirectoryBasedGlobalCompilationDatabase::getCompileCommand(File);
+  if (command != llvm::None) {
+    auto compileCommand = command->CommandLine.front();
+    auto targetFind = TargetMap.find(compileCommand);
+    std::string target;
+    if (targetFind == TargetMap.end()) {
+      target = TargetMap.try_emplace(compileCommand, getTarget(command->CommandLine)).first->getValue();
+    } else {
+      target = targetFind->second;
+    }
+
+    if (!target.empty()) {
+      command->CommandLine.insert(command->CommandLine.begin() + 1, target);
+      command->CommandLine.insert(command->CommandLine.begin() + 1, "-target");
+      LastTarget = target;
+    }
+  }
+  return command;
+}
+
+tooling::CompileCommand
+GCCDirectoryBasedGlobalCompilationDatabase::getFallbackCommand(PathRef File) const {
+  auto command = DirectoryBasedGlobalCompilationDatabase::getFallbackCommand(File);
+  if (!LastTarget.empty()) {
+    auto compileCommand = command.CommandLine.front();
+    command.CommandLine.insert(command.CommandLine.begin() + 1, LastTarget);
+    command.CommandLine.insert(command.CommandLine.begin() + 1, "-target");
+  }
+  return command;
 }
 
 OverlayCDB::OverlayCDB(const GlobalCompilationDatabase *Base,

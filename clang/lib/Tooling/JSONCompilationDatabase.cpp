@@ -2,6 +2,7 @@
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
+// Some modifications Copyright (c) QNX Software and licensed same.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
@@ -138,7 +139,7 @@ std::vector<std::string> unescapeCommandLine(JSONCommandLineSyntax Syntax,
       // Assume Windows command line parsing on Win32 unless the triple
       // explicitly tells us otherwise.
       if (!Triple.hasEnvironment() ||
-          Triple.getEnvironment() == llvm::Triple::EnvironmentType::MSVC)
+          Triple.getEnvironment() != llvm::Triple::EnvironmentType::Cygnus)
         Syntax = JSONCommandLineSyntax::Windows;
     }
   }

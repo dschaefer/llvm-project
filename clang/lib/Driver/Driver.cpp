@@ -2,6 +2,7 @@
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
+// Some modifications Copyright (c) QNX Software and licensed same.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
@@ -38,6 +39,7 @@
 #include "ToolChains/NetBSD.h"
 #include "ToolChains/OpenBSD.h"
 #include "ToolChains/PS4CPU.h"
+#include "ToolChains/QCC.h"
 #include "ToolChains/RISCVToolchain.h"
 #include "ToolChains/Solaris.h"
 #include "ToolChains/TCE.h"
@@ -940,6 +942,10 @@ Compilation *Driver::BuildCompilation(ArrayRef<const char *> ArgList) {
       PrefixDirs.push_back(Split.first);
       CompilerPath = Split.second;
     }
+  }
+
+  if (toolchains::QCC::isExeQCC(ClangExecutable)) {
+    TargetTriple = toolchains::QCC::getTriple(ArgList.slice(1));
   }
 
   // We look for the driver mode option early, because the mode can affect
@@ -4622,6 +4628,9 @@ const ToolChain &Driver::getToolChain(const ArgList &Args,
       break;
     case llvm::Triple::Contiki:
       TC = llvm::make_unique<toolchains::Contiki>(*this, Target, Args);
+      break;
+    case llvm::Triple::QNXNTO:
+      TC = llvm::make_unique<toolchains::QCC>(*this, Target, Args);
       break;
     case llvm::Triple::Hurd:
       TC = llvm::make_unique<toolchains::Hurd>(*this, Target, Args);

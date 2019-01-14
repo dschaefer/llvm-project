@@ -2,6 +2,7 @@
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
+// Some modifications Copyright (c) QNX Software and licensed same.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
@@ -65,6 +66,7 @@ StringRef Triple::getArchTypeName(ArchType Kind) {
   case kalimba:        return "kalimba";
   case lanai:          return "lanai";
   case shave:          return "shave";
+  case xtensa:         return "xtensa";
   case wasm32:         return "wasm32";
   case wasm64:         return "wasm64";
   case renderscript32: return "renderscript32";
@@ -206,6 +208,7 @@ StringRef Triple::getOSTypeName(OSType Kind) {
   case Contiki: return "contiki";
   case AMDPAL: return "amdpal";
   case HermitCore: return "hermit";
+  case QNXNTO: return "nto";
   case Hurd: return "hurd";
   case WASI: return "wasi";
   }
@@ -303,6 +306,7 @@ Triple::ArchType Triple::getArchTypeForLLVMName(StringRef Name) {
     .Case("kalimba", kalimba)
     .Case("lanai", lanai)
     .Case("shave", shave)
+    .Case("xtensa", xtensa)
     .Case("wasm32", wasm32)
     .Case("wasm64", wasm64)
     .Case("renderscript32", renderscript32)
@@ -429,6 +433,7 @@ static Triple::ArchType parseArch(StringRef ArchName) {
     .StartsWith("kalimba", Triple::kalimba)
     .Case("lanai", Triple::lanai)
     .Case("shave", Triple::shave)
+    .Case("xtensa", Triple::xtensa)
     .Case("wasm32", Triple::wasm32)
     .Case("wasm64", Triple::wasm64)
     .Case("renderscript32", Triple::renderscript32)
@@ -504,6 +509,7 @@ static Triple::OSType parseOS(StringRef OSName) {
     .StartsWith("contiki", Triple::Contiki)
     .StartsWith("amdpal", Triple::AMDPAL)
     .StartsWith("hermit", Triple::HermitCore)
+    .StartsWith("nto", Triple::QNXNTO)
     .StartsWith("hurd", Triple::Hurd)
     .StartsWith("wasi", Triple::WASI)
     .Default(Triple::UnknownOS);
@@ -680,6 +686,7 @@ static Triple::ObjectFormatType getDefaultFormat(const Triple &T) {
   case Triple::tcele:
   case Triple::thumbeb:
   case Triple::xcore:
+  case Triple::xtensa:
     return Triple::ELF;
 
   case Triple::ppc:
@@ -1236,6 +1243,7 @@ static unsigned getArchPointerBitWidth(llvm::Triple::ArchType Arch) {
   case llvm::Triple::kalimba:
   case llvm::Triple::lanai:
   case llvm::Triple::shave:
+  case llvm::Triple::xtensa:
   case llvm::Triple::wasm32:
   case llvm::Triple::renderscript32:
     return 32;
@@ -1316,6 +1324,7 @@ Triple Triple::get32BitArchVariant() const {
   case Triple::xcore:
   case Triple::lanai:
   case Triple::shave:
+  case Triple::xtensa:
   case Triple::wasm32:
   case Triple::renderscript32:
     // Already 32-bit.
@@ -1356,6 +1365,7 @@ Triple Triple::get64BitArchVariant() const {
   case Triple::xcore:
   case Triple::sparcel:
   case Triple::shave:
+  case Triple::xtensa:
     T.setArch(UnknownArch);
     break;
 
@@ -1524,6 +1534,7 @@ bool Triple::isLittleEndian() const {
   case Triple::x86_64:
   case Triple::xcore:
   case Triple::tcele:
+  case Triple::xtensa:
   case Triple::renderscript32:
   case Triple::renderscript64:
     return true;

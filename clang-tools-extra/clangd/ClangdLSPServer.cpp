@@ -2,6 +2,7 @@
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
+// Some modifications Copyright (c) QNX Software and licensed same.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
@@ -312,7 +313,7 @@ void ClangdLSPServer::onInitialize(const InitializeParams &Params,
   if (const auto &Dir = Params.initializationOptions.compilationDatabasePath)
     CompileCommandsDir = Dir;
   if (UseDirBasedCDB)
-    BaseCDB = llvm::make_unique<DirectoryBasedGlobalCompilationDatabase>(
+    BaseCDB = llvm::make_unique<GCCDirectoryBasedGlobalCompilationDatabase>(
         CompileCommandsDir);
   CDB.emplace(BaseCDB.get(), Params.initializationOptions.fallbackFlags,
               ClangdServerOpts.ResourceDir);

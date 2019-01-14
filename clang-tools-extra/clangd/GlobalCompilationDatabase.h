@@ -2,6 +2,7 @@
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
+// Some modifications Copyright (c) QNX Software and licensed same.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
@@ -89,6 +90,31 @@ private:
   /// Used for command argument pointing to folder where compile_commands.json
   /// is located.
   llvm::Optional<Path> CompileCommandsDir;
+};
+
+// Database that check the gcc target and adds the appropriate -target argument
+class GCCDirectoryBasedGlobalCompilationDatabase
+  : public DirectoryBasedGlobalCompilationDatabase {
+public:
+  GCCDirectoryBasedGlobalCompilationDatabase(
+      llvm::Optional<Path> CompileCommandsDir);
+
+  // Adds the -target flag
+  llvm::Optional<tooling::CompileCommand>
+  getCompileCommand(PathRef File, ProjectInfo * = nullptr) const override;
+
+  tooling::CompileCommand
+  getFallbackCommand(PathRef File) const override;
+
+private:
+  // Maps command to target
+  mutable llvm::StringMap<std::string> TargetMap;
+
+  // Last target for fallback
+  mutable std::string LastTarget;
+
+  // run command to see what the target is
+  std::string getTarget(std::vector<std::string> CommandLine) const;
 };
 
 /// Wraps another compilation database, and supports overriding the commands

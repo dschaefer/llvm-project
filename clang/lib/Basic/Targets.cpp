@@ -2,6 +2,7 @@
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
+// Some modifications Copyright (c) QNX Software and licensed same.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
@@ -36,6 +37,7 @@
 #include "Targets/WebAssembly.h"
 #include "Targets/X86.h"
 #include "Targets/XCore.h"
+#include "Targets/Xtensa.h"
 #include "clang/Basic/Diagnostic.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/Triple.h"
@@ -152,6 +154,8 @@ TargetInfo *AllocateTarget(const llvm::Triple &Triple,
       return new NetBSDTargetInfo<AArch64leTargetInfo>(Triple, Opts);
     case llvm::Triple::OpenBSD:
       return new OpenBSDTargetInfo<AArch64leTargetInfo>(Triple, Opts);
+    case llvm::Triple::QNXNTO:
+      return new QNXNTOTargetInfo<AArch64leTargetInfo>(Triple, Opts);
     case llvm::Triple::Win32:
       switch (Triple.getEnvironment()) {
       case llvm::Triple::GNU:
@@ -194,6 +198,8 @@ TargetInfo *AllocateTarget(const llvm::Triple &Triple,
       return new NetBSDTargetInfo<ARMleTargetInfo>(Triple, Opts);
     case llvm::Triple::OpenBSD:
       return new OpenBSDTargetInfo<ARMleTargetInfo>(Triple, Opts);
+    case llvm::Triple::QNXNTO:
+      return new QNXNTOTargetInfo<ARMleTargetInfo>(Triple, Opts);
     case llvm::Triple::RTEMS:
       return new RTEMSTargetInfo<ARMleTargetInfo>(Triple, Opts);
     case llvm::Triple::NaCl:
@@ -470,6 +476,8 @@ TargetInfo *AllocateTarget(const llvm::Triple &Triple,
       return new FreeBSDTargetInfo<X86_32TargetInfo>(Triple, Opts);
     case llvm::Triple::KFreeBSD:
       return new KFreeBSDTargetInfo<X86_32TargetInfo>(Triple, Opts);
+    case llvm::Triple::QNXNTO:
+      return new QNXNTOTargetInfo<X86_32TargetInfo>(Triple, Opts);
     case llvm::Triple::Minix:
       return new MinixTargetInfo<X86_32TargetInfo>(Triple, Opts);
     case llvm::Triple::Solaris:
@@ -525,6 +533,8 @@ TargetInfo *AllocateTarget(const llvm::Triple &Triple,
       return new OpenBSDX86_64TargetInfo(Triple, Opts);
     case llvm::Triple::FreeBSD:
       return new FreeBSDTargetInfo<X86_64TargetInfo>(Triple, Opts);
+    case llvm::Triple::QNXNTO:
+      return new QNXNTOTargetInfo<X86_64TargetInfo>(Triple, Opts);
     case llvm::Triple::Fuchsia:
       return new FuchsiaTargetInfo<X86_64TargetInfo>(Triple, Opts);
     case llvm::Triple::KFreeBSD:
@@ -564,6 +574,8 @@ TargetInfo *AllocateTarget(const llvm::Triple &Triple,
       return nullptr;
     return new SPIR64TargetInfo(Triple, Opts);
   }
+  case llvm::Triple::xtensa:
+    return new XtensaTargetInfo(Triple, Opts);
   case llvm::Triple::wasm32:
     if (Triple.getSubArch() != llvm::Triple::NoSubArch ||
         Triple.getVendor() != llvm::Triple::UnknownVendor ||

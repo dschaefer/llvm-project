@@ -2,6 +2,7 @@
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
+// Some modifications Copyright (c) QNX Software and licensed same.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
@@ -799,6 +800,48 @@ class LLVM_LIBRARY_VISIBILITY WASITargetInfo
 public:
   explicit WASITargetInfo(const llvm::Triple &Triple, const TargetOptions &Opts)
       : WebAssemblyOSTargetInfo<Target>(Triple, Opts) {}
+};
+
+// QNXNTO Target
+template <typename Target>
+class LLVM_LIBRARY_VISIBILITY QNXNTOTargetInfo
+    : public OSTargetInfo<Target> {
+  void getOSDefines(const LangOptions &Opts, const llvm::Triple &Triple,
+                    MacroBuilder &Builder) const final {
+    Builder.defineMacro("__QNXNTO__");
+    Builder.defineMacro("__QNX__");
+    Builder.defineMacro("__ELF__");
+    Builder.defineMacro("__unix__");
+    Builder.defineMacro("__unix");
+
+    switch (Triple.getArch()) {
+      case llvm::Triple::x86:
+        Builder.defineMacro("__X86__");
+        Builder.defineMacro("__LITTLEENDIAN__");
+        break;
+      case llvm::Triple::x86_64:
+        Builder.defineMacro("__X86_64__");
+        Builder.defineMacro("__LITTLEENDIAN__");
+        break;
+      case llvm::Triple::arm:
+        Builder.defineMacro("__ARM__");
+        Builder.defineMacro("__LITTLEENDIAN__");
+        break;
+      case llvm::Triple::aarch64:
+        Builder.defineMacro("__aarch64__");
+        Builder.defineMacro("__LITTLEENDIAN__");
+        break;
+      default:
+        llvm::errs() << "Unknown QNX Arch " << Triple.getArchName() << "\n";
+    }
+  }
+
+public:
+  explicit QNXNTOTargetInfo(const llvm::Triple &Triple,
+                            const TargetOptions &Opts)
+      : OSTargetInfo<Target>(Triple, Opts) {
+    this->WCharType = this->UnsignedInt;
+  }
 };
 
 } // namespace targets
