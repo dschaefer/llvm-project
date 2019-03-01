@@ -169,7 +169,7 @@ class ELFState {
   bool writeSectionContent(Elf_Shdr &SHeader,
                            const ELFYAML::MipsABIFlags &Section,
                            ContiguousBlobAccumulator &CBA);
-  void writeSectionContent(Elf_Shdr &SHeader,
+  bool writeSectionContent(Elf_Shdr &SHeader,
                            const ELFYAML::DynamicSection &Section,
                            ContiguousBlobAccumulator &CBA);
   bool hasDynamicSymbols() const;
@@ -309,7 +309,8 @@ bool ELFState<ELFT>::initSectionHeaders(std::vector<Elf_Shdr> &SHeaders,
       // so just to setup the section offset.
       CBA.getOSAndAlignedOffset(SHeader.sh_offset, SHeader.sh_addralign);
     } else if (auto S = dyn_cast<ELFYAML::DynamicSection>(Sec.get())) {
-      writeSectionContent(SHeader, *S, CBA);
+      if (!writeSectionContent(SHeader, *S, CBA))
+        return false;
     } else if (auto S = dyn_cast<ELFYAML::SymverSection>(Sec.get())) {
       writeSectionContent(SHeader, *S, CBA);
     } else if (auto S = dyn_cast<ELFYAML::VerneedSection>(Sec.get())) {
@@ -340,13 +341,16 @@ void ELFState<ELFT>::initSymtabSectionHeader(Elf_Shdr &SHeader,
   SHeader.sh_entsize = sizeof(Elf_Sym);
   SHeader.sh_addralign = 8;
 
-  // If .dynsym section is explicitly described in the YAML
-  // then we want to use its section address.
-  if (!IsStatic) {
-    // Take section index and ignore the SHT_NULL section.
-    unsigned SecNdx = getDotDynSymSecNo() - 1;
-    if (SecNdx < Doc.Sections.size())
-      SHeader.sh_addr = Doc.Sections[SecNdx]->Address;
+  // Get the section index ignoring the SHT_NULL section.
+  unsigned SecNdx =
+      IsStatic ? getDotSymTabSecNo() - 1 : getDotDynSymSecNo() - 1;
+  // If the symbol table section is explicitly described in the YAML
+  // then we should set the fields requested.
+  if (SecNdx < Doc.Sections.size()) {
+    ELFYAML::Section *Sec = Doc.Sections[SecNdx].get();
+    SHeader.sh_addr = Sec->Address;
+    if (auto S = dyn_cast<ELFYAML::RawContentSection>(Sec))
+      SHeader.sh_info = S->Info;
   }
 
   std::vector<Elf_Sym> Syms;
@@ -502,6 +506,7 @@ ELFState<ELFT>::writeSectionContent(Elf_Shdr &SHeader,
   else
     SHeader.sh_entsize = 0;
   SHeader.sh_size = Section.Size;
+  SHeader.sh_info = Section.Info;
 }
 
 static bool isMips64EL(const ELFYAML::Object &Doc) {
@@ -713,7 +718,7 @@ bool ELFState<ELFT>::writeSectionContent(Elf_Shdr &SHeader,
 }
 
 template <class ELFT>
-void ELFState<ELFT>::writeSectionContent(Elf_Shdr &SHeader,
+bool ELFState<ELFT>::writeSectionContent(Elf_Shdr &SHeader,
                                          const ELFYAML::DynamicSection &Section,
                                          ContiguousBlobAccumulator &CBA) {
   typedef typename ELFT::uint uintX_t;
@@ -721,7 +726,18 @@ void ELFState<ELFT>::writeSectionContent(Elf_Shdr &SHeader,
   assert(Section.Type == llvm::ELF::SHT_DYNAMIC &&
          "Section type is not SHT_DYNAMIC");
 
-  SHeader.sh_size = 2 * sizeof(uintX_t) * Section.Entries.size();
+  if (!Section.Entries.empty() && Section.Content) {
+    WithColor::error()
+        << "Cannot specify both raw content and explicit entries "
+           "for dynamic section '"
+        << Section.Name << "'.\n";
+    return false;
+  }
+
+  if (Section.Content)
+    SHeader.sh_size = Section.Content->binary_size();
+  else
+    SHeader.sh_size = 2 * sizeof(uintX_t) * Section.Entries.size();
   if (Section.EntSize)
     SHeader.sh_entsize = *Section.EntSize;
   else
@@ -732,6 +748,10 @@ void ELFState<ELFT>::writeSectionContent(Elf_Shdr &SHeader,
     support::endian::write<uintX_t>(OS, DE.Tag, ELFT::TargetEndianness);
     support::endian::write<uintX_t>(OS, DE.Val, ELFT::TargetEndianness);
   }
+  if (Section.Content)
+    Section.Content->writeAsBinary(OS);
+
+  return true;
 }
 
 template <class ELFT> bool ELFState<ELFT>::buildSectionIndex() {

@@ -159,6 +159,8 @@ AMDGPULegalizerInfo::AMDGPULegalizerInfo(const GCNSubtarget &ST,
     .legalFor(AddrSpaces32)
     .clampScalar(0, S32, S256)
     .widenScalarToNextPow2(0, 32)
+    .clampMaxNumElements(0, S32, 16)
+    .moreElementsIf(isSmallOddVector(0), oneMoreElement(0))
     .legalIf(isPointer(0));
 
 
@@ -174,6 +176,7 @@ AMDGPULegalizerInfo::AMDGPULegalizerInfo(const GCNSubtarget &ST,
     .clampScalar(0, S32, S64)
     .moreElementsIf(isSmallOddVector(0), oneMoreElement(0))
     .fewerElementsIf(vectorWiderThan(0, 32), fewerEltsToSize64Vector(0))
+    .widenScalarToNextPow2(0)
     .scalarize(0);
 
   getActionDefinitionsBuilder({G_UADDO, G_SADDO, G_USUBO, G_SSUBO,
@@ -204,7 +207,8 @@ AMDGPULegalizerInfo::AMDGPULegalizerInfo(const GCNSubtarget &ST,
     .moreElementsIf(isSmallOddVector(0), oneMoreElement(0))
     .clampScalarOrElt(0, S32, S512)
     .legalIf(isMultiple32(0))
-    .widenScalarToNextPow2(0, 32);
+    .widenScalarToNextPow2(0, 32)
+    .clampMaxNumElements(0, S32, 16);
 
 
   // FIXME: i1 operands to intrinsics should always be legal, but other i1
@@ -269,6 +273,7 @@ AMDGPULegalizerInfo::AMDGPULegalizerInfo(const GCNSubtarget &ST,
     .legalFor({{S64, S32}, {S32, S16}, {S64, S16},
                {S32, S1}, {S64, S1}, {S16, S1},
                // FIXME: Hack
+               {S64, LLT::scalar(33)},
                {S32, S8}, {S128, S32}, {S128, S64}, {S32, LLT::scalar(24)}})
     .scalarize(0);
 

@@ -1385,7 +1385,10 @@ class AtomicSDNode : public MemSDNode {
 public:
   AtomicSDNode(unsigned Opc, unsigned Order, const DebugLoc &dl, SDVTList VTL,
                EVT MemVT, MachineMemOperand *MMO)
-      : MemSDNode(Opc, Order, dl, VTL, MemVT, MMO) {}
+    : MemSDNode(Opc, Order, dl, VTL, MemVT, MMO) {
+    assert(((Opc != ISD::ATOMIC_LOAD && Opc != ISD::ATOMIC_STORE) ||
+            MMO->isAtomic()) && "then why are we using an AtomicSDNode?");
+  }
 
   const SDValue &getBasePtr() const { return getOperand(1); }
   const SDValue &getVal() const { return getOperand(2); }
@@ -1629,8 +1632,18 @@ bool isBitwiseNot(SDValue V);
 /// Returns the SDNode if it is a constant splat BuildVector or constant int.
 ConstantSDNode *isConstOrConstSplat(SDValue N, bool AllowUndefs = false);
 
+/// Returns the SDNode if it is a demanded constant splat BuildVector or
+/// constant int.
+ConstantSDNode *isConstOrConstSplat(SDValue N, const APInt &DemandedElts,
+                                    bool AllowUndefs = false);
+
 /// Returns the SDNode if it is a constant splat BuildVector or constant float.
 ConstantFPSDNode *isConstOrConstSplatFP(SDValue N, bool AllowUndefs = false);
+
+/// Returns the SDNode if it is a demanded constant splat BuildVector or
+/// constant float.
+ConstantFPSDNode *isConstOrConstSplatFP(SDValue N, const APInt &DemandedElts,
+                                        bool AllowUndefs = false);
 
 /// Return true if the value is a constant 0 integer or a splatted vector of
 /// a constant 0 integer (with no undefs by default).
@@ -1868,11 +1881,30 @@ public:
                        unsigned MinSplatBits = 0,
                        bool isBigEndian = false) const;
 
+  /// Returns the demanded splatted value or a null value if this is not a
+  /// splat.
+  ///
+  /// The DemandedElts mask indicates the elements that must be in the splat.
+  /// If passed a non-null UndefElements bitvector, it will resize it to match
+  /// the vector width and set the bits where elements are undef.
+  SDValue getSplatValue(const APInt &DemandedElts,
+                        BitVector *UndefElements = nullptr) const;
+
   /// Returns the splatted value or a null value if this is not a splat.
   ///
   /// If passed a non-null UndefElements bitvector, it will resize it to match
   /// the vector width and set the bits where elements are undef.
   SDValue getSplatValue(BitVector *UndefElements = nullptr) const;
+
+  /// Returns the demanded splatted constant or null if this is not a constant
+  /// splat.
+  ///
+  /// The DemandedElts mask indicates the elements that must be in the splat.
+  /// If passed a non-null UndefElements bitvector, it will resize it to match
+  /// the vector width and set the bits where elements are undef.
+  ConstantSDNode *
+  getConstantSplatNode(const APInt &DemandedElts,
+                       BitVector *UndefElements = nullptr) const;
 
   /// Returns the splatted constant or null if this is not a constant
   /// splat.
@@ -1881,6 +1913,16 @@ public:
   /// the vector width and set the bits where elements are undef.
   ConstantSDNode *
   getConstantSplatNode(BitVector *UndefElements = nullptr) const;
+
+  /// Returns the demanded splatted constant FP or null if this is not a
+  /// constant FP splat.
+  ///
+  /// The DemandedElts mask indicates the elements that must be in the splat.
+  /// If passed a non-null UndefElements bitvector, it will resize it to match
+  /// the vector width and set the bits where elements are undef.
+  ConstantFPSDNode *
+  getConstantFPSplatNode(const APInt &DemandedElts,
+                         BitVector *UndefElements = nullptr) const;
 
   /// Returns the splatted constant FP or null if this is not a constant
   /// FP splat.
@@ -2099,6 +2141,8 @@ public:
       : MemSDNode(NodeTy, Order, dl, VTs, MemVT, MMO) {
     LSBaseSDNodeBits.AddressingMode = AM;
     assert(getAddressingMode() == AM && "Value truncated");
+    assert((!MMO->isAtomic() || MMO->isVolatile()) &&
+           "use an AtomicSDNode instead for non-volatile atomics");
   }
 
   const SDValue &getOffset() const {

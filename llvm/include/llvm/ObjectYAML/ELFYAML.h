@@ -141,6 +141,7 @@ struct Section {
 
 struct DynamicSection : Section {
   std::vector<DynamicEntry> Entries;
+  Optional<yaml::BinaryRef> Content;
 
   DynamicSection() : Section(SectionKind::Dynamic) {}
 
@@ -152,6 +153,7 @@ struct DynamicSection : Section {
 struct RawContentSection : Section {
   yaml::BinaryRef Content;
   llvm::yaml::Hex64 Size;
+  llvm::yaml::Hex64 Info;
 
   RawContentSection() : Section(SectionKind::RawContent) {}
 

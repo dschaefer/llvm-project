@@ -19,6 +19,7 @@
 #include "lld/Common/Driver.h"
 #include "lld/Common/ErrorHandler.h"
 #include "lld/Common/Memory.h"
+#include "lld/Common/Threads.h"
 #include "lld/Common/Timer.h"
 #include "lld/Common/Version.h"
 #include "llvm/ADT/Optional.h"
@@ -987,6 +988,8 @@ void LinkerDriver::link(ArrayRef<const char *> ArgsArr) {
     return;
   }
 
+  lld::ThreadsEnabled = Args.hasFlag(OPT_threads, OPT_threads_no, true);
+
   if (Args.hasArg(OPT_show_timing))
     Config->ShowTiming = true;
 
@@ -1417,6 +1420,10 @@ void LinkerDriver::link(ArrayRef<const char *> ArgsArr) {
     Config->Machine = AMD64;
   }
   Config->Wordsize = Config->is64() ? 8 : 4;
+
+  // Handle /functionpadmin
+  for (auto *Arg : Args.filtered(OPT_functionpadmin, OPT_functionpadmin_opt))
+    parseFunctionPadMin(Arg, Config->Machine);
 
   // Input files can be Windows resource files (.res files). We use
   // WindowsResource to convert resource files to a regular COFF file,

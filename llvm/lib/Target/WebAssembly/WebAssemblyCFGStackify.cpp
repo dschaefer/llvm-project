@@ -64,6 +64,7 @@ class WebAssemblyCFGStackify final : public MachineFunctionPass {
   void placeBlockMarker(MachineBasicBlock &MBB);
   void placeLoopMarker(MachineBasicBlock &MBB);
   void placeTryMarker(MachineBasicBlock &MBB);
+  void removeUnnecessaryInstrs(MachineFunction &MF);
   void rewriteDepthImmediates(MachineFunction &MF);
   void fixEndsAtEndOfFunction(MachineFunction &MF);
 
@@ -76,11 +77,12 @@ class WebAssemblyCFGStackify final : public MachineFunctionPass {
   // <EH pad, TRY marker> map
   DenseMap<const MachineBasicBlock *, MachineInstr *> EHPadToTry;
 
-  // Helper functions to register scope information created by marker
-  // instructions.
+  // Helper functions to register / unregister scope information created by
+  // marker instructions.
   void registerScope(MachineInstr *Begin, MachineInstr *End);
   void registerTryScope(MachineInstr *Begin, MachineInstr *End,
                         MachineBasicBlock *EHPad);
+  void unregisterScope(MachineInstr *Begin);
 
 public:
   static char ID; // Pass identification, replacement for typeid
@@ -173,6 +175,20 @@ void WebAssemblyCFGStackify::registerTryScope(MachineInstr *Begin,
   registerScope(Begin, End);
   TryToEHPad[Begin] = EHPad;
   EHPadToTry[EHPad] = Begin;
+}
+
+void WebAssemblyCFGStackify::unregisterScope(MachineInstr *Begin) {
+  assert(BeginToEnd.count(Begin));
+  MachineInstr *End = BeginToEnd[Begin];
+  assert(EndToBegin.count(End));
+  BeginToEnd.erase(Begin);
+  EndToBegin.erase(End);
+  MachineBasicBlock *EHPad = TryToEHPad.lookup(Begin);
+  if (EHPad) {
+    assert(EHPadToTry.count(EHPad));
+    TryToEHPad.erase(Begin);
+    EHPadToTry.erase(EHPad);
+  }
 }
 
 /// Insert a BLOCK marker for branches to MBB (if needed).
@@ -449,11 +465,11 @@ void WebAssemblyCFGStackify::placeTryMarker(MachineBasicBlock &MBB) {
     MF.push_back(Label);
     Iter = std::next(MachineFunction::iterator(Bottom));
   }
-  MachineBasicBlock *AfterTry = &*Iter;
+  MachineBasicBlock *Cont = &*Iter;
 
-  assert(AfterTry != &MF.front());
+  assert(Cont != &MF.front());
   MachineBasicBlock *LayoutPred =
-      &*std::prev(MachineFunction::iterator(AfterTry));
+      &*std::prev(MachineFunction::iterator(Cont));
 
   // If the nearest common dominator is inside a more deeply nested context,
   // walk out to the nearest scope which isn't more deeply nested.
@@ -545,7 +561,7 @@ void WebAssemblyCFGStackify::placeTryMarker(MachineBasicBlock &MBB) {
   // Decide where in Header to put the END_TRY.
   BeforeSet.clear();
   AfterSet.clear();
-  for (const auto &MI : *AfterTry) {
+  for (const auto &MI : *Cont) {
 #ifndef NDEBUG
     // END_TRY should precede existing LOOP markers.
     if (MI.getOpcode() == WebAssembly::LOOP)
@@ -572,17 +588,98 @@ void WebAssemblyCFGStackify::placeTryMarker(MachineBasicBlock &MBB) {
   }
 
   // Mark the end of the TRY.
-  InsertPos = getEarliestInsertPos(AfterTry, BeforeSet, AfterSet);
+  InsertPos = getEarliestInsertPos(Cont, BeforeSet, AfterSet);
   MachineInstr *End =
-      BuildMI(*AfterTry, InsertPos, Bottom->findBranchDebugLoc(),
+      BuildMI(*Cont, InsertPos, Bottom->findBranchDebugLoc(),
               TII.get(WebAssembly::END_TRY));
   registerTryScope(Begin, End, &MBB);
 
-  // Track the farthest-spanning scope that ends at this point.
-  int Number = AfterTry->getNumber();
-  if (!ScopeTops[Number] ||
-      ScopeTops[Number]->getNumber() > Header->getNumber())
-    ScopeTops[Number] = Header;
+  // Track the farthest-spanning scope that ends at this point. We create two
+  // mappings: (BB with 'end_try' -> BB with 'try') and (BB with 'catch' -> BB
+  // with 'try'). We need to create 'catch' -> 'try' mapping here too because
+  // markers should not span across 'catch'. For example, this should not
+  // happen:
+  //
+  // try
+  //   block     --|  (X)
+  // catch         |
+  //   end_block --|
+  // end_try
+  for (int Number : {Cont->getNumber(), MBB.getNumber()}) {
+    if (!ScopeTops[Number] ||
+        ScopeTops[Number]->getNumber() > Header->getNumber())
+      ScopeTops[Number] = Header;
+  }
+}
+
+void WebAssemblyCFGStackify::removeUnnecessaryInstrs(MachineFunction &MF) {
+  const auto &TII = *MF.getSubtarget<WebAssemblySubtarget>().getInstrInfo();
+
+  // When there is an unconditional branch right before a catch instruction and
+  // it branches to the end of end_try marker, we don't need the branch, because
+  // it there is no exception, the control flow transfers to that point anyway.
+  // bb0:
+  //   try
+  //     ...
+  //     br bb2      <- Not necessary
+  // bb1:
+  //   catch
+  //     ...
+  // bb2:
+  //   end
+  for (auto &MBB : MF) {
+    if (!MBB.isEHPad())
+      continue;
+
+    MachineBasicBlock *TBB = nullptr, *FBB = nullptr;
+    SmallVector<MachineOperand, 4> Cond;
+    MachineBasicBlock *EHPadLayoutPred =
+        &*std::prev(MachineFunction::iterator(&MBB));
+    MachineBasicBlock *Cont = BeginToEnd[EHPadToTry[&MBB]]->getParent();
+    bool Analyzable = !TII.analyzeBranch(*EHPadLayoutPred, TBB, FBB, Cond);
+    if (Analyzable && ((Cond.empty() && TBB && TBB == Cont) ||
+                       (!Cond.empty() && FBB && FBB == Cont)))
+      TII.removeBranch(*EHPadLayoutPred);
+  }
+
+  // When there are block / end_block markers that overlap with try / end_try
+  // markers, and the block and try markers' return types are the same, the
+  // block /end_block markers are not necessary, because try / end_try markers
+  // also can serve as boundaries for branches.
+  // block         <- Not necessary
+  //   try
+  //     ...
+  //   catch
+  //     ...
+  //   end
+  // end           <- Not necessary
+  SmallVector<MachineInstr *, 32> ToDelete;
+  for (auto &MBB : MF) {
+    for (auto &MI : MBB) {
+      if (MI.getOpcode() != WebAssembly::TRY)
+        continue;
+
+      MachineInstr *Try = &MI, *EndTry = BeginToEnd[Try];
+      MachineBasicBlock *TryBB = Try->getParent();
+      MachineBasicBlock *Cont = EndTry->getParent();
+      int64_t RetType = Try->getOperand(0).getImm();
+      for (auto B = MachineBasicBlock::iterator(Try),
+                E = std::next(MachineBasicBlock::iterator(EndTry));
+           B != TryBB->begin() && E != Cont->end() &&
+           std::prev(B)->getOpcode() == WebAssembly::BLOCK &&
+           E->getOpcode() == WebAssembly::END_BLOCK &&
+           std::prev(B)->getOperand(0).getImm() == RetType;
+           --B, ++E) {
+        ToDelete.push_back(&*std::prev(B));
+        ToDelete.push_back(&*E);
+      }
+    }
+  }
+  for (auto *MI : ToDelete) {
+    if (MI->getOpcode() == WebAssembly::BLOCK)
+      unregisterScope(MI);
+    MI->eraseFromParent();
+  }
 }
 
 static unsigned
@@ -695,12 +792,6 @@ void WebAssemblyCFGStackify::rewriteDepthImmediates(MachineFunction &MF) {
       MachineInstr &MI = *I;
       switch (MI.getOpcode()) {
       case WebAssembly::BLOCK:
-        assert(ScopeTops[Stack.back()->getNumber()]->getNumber() <=
-                   MBB.getNumber() &&
-               "Block/try should be balanced");
-        Stack.pop_back();
-        break;
-
       case WebAssembly::TRY:
         assert(ScopeTops[Stack.back()->getNumber()]->getNumber() <=
                    MBB.getNumber() &&
@@ -750,10 +841,10 @@ void WebAssemblyCFGStackify::releaseMemory() {
 }
 
 bool WebAssemblyCFGStackify::runOnMachineFunction(MachineFunction &MF) {
-  errs() << "Function: " << MF.getName() << "\n";
   LLVM_DEBUG(dbgs() << "********** CFG Stackifying **********\n"
                        "********** Function: "
                     << MF.getName() << '\n');
+  const MCAsmInfo *MCAI = MF.getTarget().getMCAsmInfo();
 
   releaseMemory();
 
@@ -762,6 +853,11 @@ bool WebAssemblyCFGStackify::runOnMachineFunction(MachineFunction &MF) {
 
   // Place the BLOCK/LOOP/TRY markers to indicate the beginnings of scopes.
   placeMarkers(MF);
+
+  if (MCAI->getExceptionHandlingType() == ExceptionHandling::Wasm &&
+      MF.getFunction().hasPersonalityFn())
+    // Remove unnecessary instructions.
+    removeUnnecessaryInstrs(MF);
 
   // Convert MBB operands in terminators to relative depth immediates.
   rewriteDepthImmediates(MF);

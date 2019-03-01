@@ -32,6 +32,24 @@ bool WordIsPoisoned(uptr addr) {
 
 }  // namespace __lsan
 
+void __sanitizer::GetStackTrace(BufferedStackTrace *stack, uptr max_depth,
+                                uptr pc, uptr bp, void *context, bool fast) {
+  using namespace __lsan;
+  uptr stack_top = 0, stack_bottom = 0;
+  ThreadContext *t;
+  if (StackTrace::WillUseFastUnwind(fast) &&
+      (t = CurrentThreadContext())) {
+    stack_top = t->stack_end();
+    stack_bottom = t->stack_begin();
+  }
+  if (!SANITIZER_MIPS || IsValidFrame(bp, stack_top, stack_bottom)) {
+    if (StackTrace::WillUseFastUnwind(fast))
+      stack->Unwind(max_depth, pc, bp, nullptr, stack_top, stack_bottom, true);
+    else
+      stack->Unwind(max_depth, pc, 0, context, 0, 0, false);
+  }
+}
+
 using namespace __lsan;  // NOLINT
 
 static void InitializeFlags() {
@@ -71,7 +89,7 @@ static void InitializeFlags() {
 
 static void OnStackUnwind(const SignalContext &sig, const void *,
                           BufferedStackTrace *stack) {
-  GetStackTrace(stack, kStackTraceMax, sig.pc, sig.bp, sig.context,
+  stack->Unwind(sig.pc, sig.bp, sig.context,
                 common_flags()->fast_unwind_on_fatal);
 }
 

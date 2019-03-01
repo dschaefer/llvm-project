@@ -221,18 +221,6 @@ static void InitializeFlags() {
   if (f->store_context_size < 1) f->store_context_size = 1;
 }
 
-void GetStackTrace(BufferedStackTrace *stack, uptr max_s, uptr pc, uptr bp,
-                   void *context, bool request_fast_unwind) {
-  MsanThread *t = GetCurrentThread();
-  if (!t || !StackTrace::WillUseFastUnwind(request_fast_unwind)) {
-    // Block reports from our interceptors during _Unwind_Backtrace.
-    SymbolizerScope sym_scope;
-    return stack->Unwind(max_s, pc, bp, context, 0, 0, request_fast_unwind);
-  }
-  stack->Unwind(max_s, pc, bp, context, t->stack_top(), t->stack_bottom(),
-                request_fast_unwind);
-}
-
 void PrintWarning(uptr pc, uptr bp) {
   PrintWarningWithOrigin(pc, bp, __msan_origin_tls);
 }
@@ -313,6 +301,23 @@ u32 ChainOrigin(u32 id, StackTrace *stack) {
 
 } // namespace __msan
 
+void __sanitizer::GetStackTrace(BufferedStackTrace *stack, uptr max_s, uptr pc,
+                                uptr bp, void *context,
+                                bool request_fast_unwind) {
+  using namespace __msan;
+  MsanThread *t = GetCurrentThread();
+  if (!t || !StackTrace::WillUseFastUnwind(request_fast_unwind)) {
+    // Block reports from our interceptors during _Unwind_Backtrace.
+    SymbolizerScope sym_scope;
+    return stack->Unwind(max_s, pc, bp, context, 0, 0, false);
+  }
+  if (StackTrace::WillUseFastUnwind(request_fast_unwind))
+    stack->Unwind(max_s, pc, bp, nullptr, t->stack_top(), t->stack_bottom(),
+                  true);
+  else
+    stack->Unwind(max_s, pc, 0, context, 0, 0, false);
+}
+
 // Interface.
 
 using namespace __msan;
@@ -377,7 +382,7 @@ void __msan_warning_noreturn() {
 
 static void OnStackUnwind(const SignalContext &sig, const void *,
                           BufferedStackTrace *stack) {
-  GetStackTrace(stack, kStackTraceMax, sig.pc, sig.bp, sig.context,
+  stack->Unwind(sig.pc, sig.bp, sig.context,
                 common_flags()->fast_unwind_on_fatal);
 }
 

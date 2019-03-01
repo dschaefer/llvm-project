@@ -120,6 +120,15 @@ TEST_F(FormatTest, MessUp) {
   EXPECT_EQ("a\n#b c d\ne", test::messUp("a\n#b\\\nc\\\nd\ne"));
 }
 
+TEST_F(FormatTest, DefaultLLVMStyleIsCpp) {
+  EXPECT_EQ(FormatStyle::LK_Cpp, getLLVMStyle().Language);
+}
+
+TEST_F(FormatTest, LLVMStyleOverride) {
+  EXPECT_EQ(FormatStyle::LK_Proto,
+            getLLVMStyle(FormatStyle::LK_Proto).Language);
+}
+
 //===----------------------------------------------------------------------===//
 // Basic function tests.
 //===----------------------------------------------------------------------===//
@@ -9238,6 +9247,7 @@ TEST_F(FormatTest, ConfigurableSpaceBeforeParens) {
   verifyFormat("typedef void (*cb)(int);", NoSpace);
   verifyFormat("T A::operator()();", NoSpace);
   verifyFormat("X A::operator++(T);", NoSpace);
+  verifyFormat("auto lambda = []() { return 0; };", NoSpace);
 
   FormatStyle Space = getLLVMStyle();
   Space.SpaceBeforeParens = FormatStyle::SBPO_Always;
@@ -9285,6 +9295,7 @@ TEST_F(FormatTest, ConfigurableSpaceBeforeParens) {
   verifyFormat("typedef void (*cb) (int);", Space);
   verifyFormat("T A::operator() ();", Space);
   verifyFormat("X A::operator++ (T);", Space);
+  verifyFormat("auto lambda = [] () { return 0; };", Space);
 }
 
 TEST_F(FormatTest, ConfigurableSpacesInParentheses) {
