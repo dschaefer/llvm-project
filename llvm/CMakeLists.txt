@@ -104,7 +104,7 @@ endif()
 # LLVM_EXTERNAL_${project}_SOURCE_DIR using LLVM_ALL_PROJECTS
 # This allows an easy way of setting up a build directory for llvm and another
 # one for llvm+clang+... using the same sources.
-set(LLVM_ALL_PROJECTS "clang;clang-tools-extra;compiler-rt;debuginfo-tests;libclc;libcxx;libcxxabi;libunwind;lld;lldb;llgo;llvm;openmp;parallel-libs;polly;pstl")
+set(LLVM_ALL_PROJECTS "clang;clang-tools-extra;compiler-rt;debuginfo-tests;libclc;libcxx;libcxxabi;libunwind;lld;lldb;llgo;openmp;parallel-libs;polly;pstl")
 set(LLVM_ENABLE_PROJECTS "" CACHE STRING
 	"Semicolon-separated list of projects to build (${LLVM_ALL_PROJECTS}), or \"all\".")
 if( LLVM_ENABLE_PROJECTS STREQUAL "all" )
@@ -570,7 +570,7 @@ if(NOT DEFINED LLVM_DYLIB_COMPONENTS)
 endif()
 option(LLVM_LINK_LLVM_DYLIB "Link tools against the libllvm dynamic library" OFF)
 if(MSVC)
-  option(LLVM_BUILD_LLVM_C_DYLIB "Build LLVM-C.dll (Windows only)" OFF)
+  option(LLVM_BUILD_LLVM_C_DYLIB "Build LLVM-C.dll (Windows only)" ON)
 else()
   option(LLVM_BUILD_LLVM_C_DYLIB "Build libllvm-c re-export library (Darwin only)" OFF)
 endif()
@@ -603,6 +603,12 @@ if (LLVM_BUILD_INSTRUMENTED OR LLVM_BUILD_INSTRUMENTED_COVERAGE OR
       file(TO_NATIVE_PATH "${LLVM_BINARY_DIR}/profiles" LLVM_PROFILE_DATA_DIR)
     endif()
 		file(TO_NATIVE_PATH "${LLVM_PROFILE_DATA_DIR}/%${LLVM_PROFILE_MERGE_POOL_SIZE}m.profraw" LLVM_PROFILE_FILE_PATTERN)
+  endif()
+  if(NOT LLVM_CSPROFILE_FILE_PATTERN)
+    if(NOT LLVM_CSPROFILE_DATA_DIR)
+      file(TO_NATIVE_PATH "${LLVM_BINARY_DIR}/csprofiles" LLVM_CSPROFILE_DATA_DIR)
+    endif()
+    file(TO_NATIVE_PATH "${LLVM_CSPROFILE_DATA_DIR}/%${LLVM_PROFILE_MERGE_POOL_SIZE}m.profraw" LLVM_CSPROFILE_FILE_PATTERN)
   endif()
 endif()
 

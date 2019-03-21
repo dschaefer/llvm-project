@@ -139,7 +139,7 @@ struct DynRegionInfo {
   }
 };
 
-template<typename ELFT>
+template <typename ELFT>
 class ELFDumper : public ObjDumper {
 public:
   ELFDumper(const object::ELFObjectFile<ELFT> *ObjF, ScopedPrinter &Writer);
@@ -814,6 +814,16 @@ std::string ELFDumper<ELFT>::getFullSymbolName(const Elf_Sym *Symbol,
                                                bool IsDynamic) const {
   std::string SymbolName =
       maybeDemangle(unwrapOrError(Symbol->getName(StrTable)));
+
+  if (SymbolName.empty() && Symbol->getType() == ELF::STT_SECTION) {
+    unsigned SectionIndex;
+    StringRef SectionName;
+    Elf_Sym_Range Syms =
+        unwrapOrError(ObjF->getELFFile()->symbols(DotSymtabSec));
+    getSectionNameIndex(Symbol, Syms.begin(), SectionName, SectionIndex);
+    return SectionName;
+  }
+
   if (!IsDynamic)
     return SymbolName;
 
@@ -1103,16 +1113,6 @@ static const EnumEntry<unsigned> ElfSymbolVisibilities[] = {
     {"INTERNAL",  "INTERNAL",  ELF::STV_INTERNAL},
     {"HIDDEN",    "HIDDEN",    ELF::STV_HIDDEN},
     {"PROTECTED", "PROTECTED", ELF::STV_PROTECTED}};
-
-static const EnumEntry<unsigned> ElfSymbolTypes[] = {
-    {"None",      "NOTYPE",  ELF::STT_NOTYPE},
-    {"Object",    "OBJECT",  ELF::STT_OBJECT},
-    {"Function",  "FUNC",    ELF::STT_FUNC},
-    {"Section",   "SECTION", ELF::STT_SECTION},
-    {"File",      "FILE",    ELF::STT_FILE},
-    {"Common",    "COMMON",  ELF::STT_COMMON},
-    {"TLS",       "TLS",     ELF::STT_TLS},
-    {"GNU_IFunc", "IFUNC",   ELF::STT_GNU_IFUNC}};
 
 static const EnumEntry<unsigned> AMDGPUSymbolTypes[] = {
   { "AMDGPU_HSA_KERNEL",            ELF::STT_AMDGPU_HSA_KERNEL }
@@ -1594,17 +1594,17 @@ typename ELFDumper<ELFT>::Elf_Relr_Range ELFDumper<ELFT>::dyn_relrs() const {
   return DynRelrRegion.getAsArrayRef<Elf_Relr>();
 }
 
-template<class ELFT>
+template <class ELFT>
 void ELFDumper<ELFT>::printFileHeaders() {
   ELFDumperStyle->printFileHeaders(ObjF->getELFFile());
 }
 
-template<class ELFT>
+template <class ELFT>
 void ELFDumper<ELFT>::printSectionHeaders() {
   ELFDumperStyle->printSectionHeaders(ObjF->getELFFile());
 }
 
-template<class ELFT>
+template <class ELFT>
 void ELFDumper<ELFT>::printRelocations() {
   ELFDumperStyle->printRelocations(ObjF->getELFFile());
 }
@@ -1627,7 +1627,7 @@ void ELFDumper<ELFT>::printSymbols(bool PrintSymbols,
                                PrintDynamicSymbols);
 }
 
-template<class ELFT>
+template <class ELFT>
 void ELFDumper<ELFT>::printHashSymbols() {
   ELFDumperStyle->printHashSymbols(ObjF->getELFFile());
 }
@@ -1866,6 +1866,9 @@ void ELFDumper<ELFT>::printValue(uint64_t Type, uint64_t Value) {
   case DT_AUXILIARY:
     printLibrary(OS, "Auxiliary library", getDynamicString(Value));
     break;
+  case DT_USED:
+    printLibrary(OS, "Not needed object", getDynamicString(Value));
+    break;
   case DT_FILTER:
     printLibrary(OS, "Filter library", getDynamicString(Value));
     break;
@@ -1888,7 +1891,7 @@ void ELFDumper<ELFT>::printValue(uint64_t Type, uint64_t Value) {
   }
 }
 
-template<class ELFT>
+template <class ELFT>
 void ELFDumper<ELFT>::printUnwindInfo() {
   DwarfCFIEH::PrinterContext<ELFT> Ctx(W, ObjF);
   Ctx.printUnwindInformation();
@@ -1909,7 +1912,7 @@ template <> void ELFDumper<ELF32LE>::printUnwindInfo() {
 
 } // end anonymous namespace
 
-template<class ELFT>
+template <class ELFT>
 void ELFDumper<ELFT>::printDynamicTable() {
   // A valid .dynamic section contains an array of entries terminated with
   // a DT_NULL entry. However, sometimes the section content may continue
@@ -1943,7 +1946,7 @@ void ELFDumper<ELFT>::printDynamicTable() {
   W.startLine() << "]\n";
 }
 
-template<class ELFT>
+template <class ELFT>
 void ELFDumper<ELFT>::printNeededLibraries() {
   ListScope D(W, "NeededLibraries");
 
@@ -2703,7 +2706,8 @@ void GNUStyle<ELFT>::printRelocation(const ELFO *Obj, const Elf_Shdr *SymTab,
     TargetName = unwrapOrError(Obj->getSectionName(Sec));
   } else if (Sym) {
     StringRef StrTable = unwrapOrError(Obj->getStringTableForSymtab(*SymTab));
-    TargetName = maybeDemangle(unwrapOrError(Sym->getName(StrTable)));
+    TargetName = this->dumper()->getFullSymbolName(
+        Sym, StrTable, SymTab->sh_type == SHT_DYNSYM /* IsDynamic */);
   }
 
   unsigned Width = ELFT::Is64Bits ? 16 : 8;
@@ -2717,15 +2721,18 @@ void GNUStyle<ELFT>::printRelocation(const ELFO *Obj, const Elf_Shdr *SymTab,
     printField(F);
 
   std::string Addend;
-  if (Sym && IsRela) {
-    if (R.r_addend < 0)
-      Addend = " - ";
-    else
-      Addend = " + ";
-  }
+  if (IsRela) {
+    int64_t RelAddend = R.r_addend;
+    if (Sym) {
+      if (R.r_addend < 0) {
+        Addend = " - ";
+        RelAddend = std::abs(RelAddend);
+      } else
+        Addend = " + ";
+    }
 
-  if (IsRela)
-    Addend += to_hexString(std::abs(R.r_addend), false);
+    Addend += to_hexString(RelAddend, false);
+  }
   OS << Addend << "\n";
 }
 
@@ -3375,17 +3382,18 @@ void GNUStyle<ELFT>::printDynamicRelocation(const ELFO *Obj, Elf_Rela R,
   for (auto &Field : Fields)
     printField(Field);
 
-  int64_t RelAddend = R.r_addend;
   std::string Addend;
-  if (!SymbolName.empty() && IsRela) {
-    if (R.r_addend < 0)
-      Addend = " - ";
-    else
-      Addend = " + ";
+  if (IsRela) {
+    int64_t RelAddend = R.r_addend;
+    if (!SymbolName.empty()) {
+      if (R.r_addend < 0) {
+        Addend = " - ";
+        RelAddend = std::abs(RelAddend);
+      } else
+        Addend = " + ";
+    }
+    Addend += to_string(format_hex_no_prefix(RelAddend, 1));
   }
-
-  if (IsRela)
-    Addend += to_string(format_hex_no_prefix(std::abs(RelAddend), 1));
   OS << Addend << "\n";
 }
 
@@ -3885,17 +3893,6 @@ static AMDNote getAMDNote(uint32_t NoteType, ArrayRef<uint8_t> Desc) {
     return {"ISA Version",
             std::string(reinterpret_cast<const char *>(Desc.data()),
                         Desc.size())};
-  case ELF::NT_AMD_AMDGPU_PAL_METADATA:
-    const uint32_t *PALMetadataBegin =
-        reinterpret_cast<const uint32_t *>(Desc.data());
-    const uint32_t *PALMetadataEnd = PALMetadataBegin + Desc.size();
-    std::vector<uint32_t> PALMetadata(PALMetadataBegin, PALMetadataEnd);
-    std::string PALMetadataString;
-    auto Error = AMDGPU::PALMD::toString(PALMetadata, PALMetadataString);
-    if (Error) {
-      return {"PAL Metadata", "Invalid"};
-    }
-    return {"PAL Metadata", PALMetadataString};
   }
 }
 
@@ -3909,28 +3906,23 @@ static AMDGPUNote getAMDGPUNote(uint32_t NoteType, ArrayRef<uint8_t> Desc) {
   switch (NoteType) {
   default:
     return {"", ""};
-  case ELF::NT_AMDGPU_METADATA:
+  case ELF::NT_AMDGPU_METADATA: {
     auto MsgPackString =
         StringRef(reinterpret_cast<const char *>(Desc.data()), Desc.size());
-    msgpack::Reader MsgPackReader(MsgPackString);
-    auto OptMsgPackNodeOrErr = msgpack::Node::read(MsgPackReader);
-    if (errorToBool(OptMsgPackNodeOrErr.takeError()))
+    msgpack::Document MsgPackDoc;
+    if (!MsgPackDoc.readFromBlob(MsgPackString, /*Multi=*/false))
       return {"AMDGPU Metadata", "Invalid AMDGPU Metadata"};
-    auto &OptMsgPackNode = *OptMsgPackNodeOrErr;
-    if (!OptMsgPackNode)
-      return {"AMDGPU Metadata", "Invalid AMDGPU Metadata"};
-    auto &MsgPackNode = *OptMsgPackNode;
 
     AMDGPU::HSAMD::V3::MetadataVerifier Verifier(true);
-    if (!Verifier.verify(*MsgPackNode))
+    if (!Verifier.verify(MsgPackDoc.getRoot()))
       return {"AMDGPU Metadata", "Invalid AMDGPU Metadata"};
 
     std::string HSAMetadataString;
     raw_string_ostream StrOS(HSAMetadataString);
-    yaml::Output YOut(StrOS);
-    YOut << MsgPackNode;
+    MsgPackDoc.toYAML(StrOS);
 
     return {"AMDGPU Metadata", StrOS.str()};
+  }
   }
 }
 
@@ -4286,7 +4278,8 @@ void LLVMStyle<ELFT>::printRelocation(const ELFO *Obj, Elf_Rela Rel,
     TargetName = unwrapOrError(Obj->getSectionName(Sec));
   } else if (Sym) {
     StringRef StrTable = unwrapOrError(Obj->getStringTableForSymtab(*SymTab));
-    TargetName = maybeDemangle(unwrapOrError(Sym->getName(StrTable)));
+    TargetName = this->dumper()->getFullSymbolName(
+        Sym, StrTable, SymTab->sh_type == SHT_DYNSYM /* IsDynamic */);
   }
 
   if (opts::ExpandRelocs) {

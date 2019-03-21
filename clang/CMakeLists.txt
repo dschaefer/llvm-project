@@ -266,6 +266,24 @@ if (NOT(CLANG_DEFAULT_RTLIB STREQUAL "" OR
     "Default runtime library to use (\"libgcc\" or \"compiler-rt\", empty for platform default)" FORCE)
 endif()
 
+set(CLANG_DEFAULT_UNWINDLIB "" CACHE STRING
+  "Default unwind library to use (\"none\" \"libgcc\" or \"libunwind\", empty to match runtime library.)")
+if (CLANG_DEFAULT_UNWINDLIB STREQUAL "")
+  if (CLANG_DEFAULT_RTLIB STREQUAL "libgcc")
+    set (CLANG_DEFAULT_UNWINDLIB "libgcc" CACHE STRING "" FORCE)
+  elseif (CLANG_DEFAULT_RTLIBS STREQUAL "libunwind")
+    set (CLANG_DEFAULT_UNWINDLIB "none" CACHE STRING "" FORCE)
+  endif()
+endif()
+
+if (NOT(CLANG_DEFAULT_UNWINDLIB STREQUAL "none" OR
+        CLANG_DEFAULT_UNWINDLIB STREQUAL "libgcc" OR
+        CLANG_DEFAULT_UNWINDLIB STREQUAL "libunwind"))
+  message(WARNING "Resetting default unwindlib to use platform default")
+  set(CLANG_DEFAULT_UNWINDLIB "" CACHE STRING
+    "Default unwind library to use (\"none\" \"libgcc\" or \"libunwind\", empty for none)" FORCE)
+endif()
+
 set(CLANG_DEFAULT_OBJCOPY "objcopy" CACHE STRING
   "Default objcopy executable to use.")
 
@@ -388,6 +406,7 @@ include_directories(BEFORE
 if (NOT LLVM_INSTALL_TOOLCHAIN_ONLY)
   install(DIRECTORY include/clang include/clang-c
     DESTINATION include
+    COMPONENT clang-headers
     FILES_MATCHING
     PATTERN "*.def"
     PATTERN "*.h"
@@ -397,11 +416,22 @@ if (NOT LLVM_INSTALL_TOOLCHAIN_ONLY)
 
   install(DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/include/clang
     DESTINATION include
+    COMPONENT clang-headers
     FILES_MATCHING
     PATTERN "CMakeFiles" EXCLUDE
     PATTERN "*.inc"
     PATTERN "*.h"
     )
+
+  # Installing the headers needs to depend on generating any public
+  # tablegen'd headers.
+  add_custom_target(clang-headers DEPENDS clang-tablegen-targets)
+  set_target_properties(clang-headers PROPERTIES FOLDER "Misc")
+  if(NOT LLVM_ENABLE_IDE)
+    add_llvm_install_targets(install-clang-headers
+                             DEPENDS clang-headers
+                             COMPONENT clang-headers)
+  endif()
 
   install(PROGRAMS utils/bash-autocomplete.sh
     DESTINATION share/clang
@@ -666,6 +696,8 @@ if (CLANG_ENABLE_BOOTSTRAP)
     LLVM_VERSION_SUFFIX
     LLVM_BINUTILS_INCDIR
     CLANG_REPOSITORY_STRING
+    CMAKE_C_COMPILER_LAUNCHER
+    CMAKE_CXX_COMPILER_LAUNCHER
     CMAKE_MAKE_PROGRAM
     CMAKE_OSX_ARCHITECTURES
     LLVM_ENABLE_PROJECTS

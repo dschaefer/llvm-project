@@ -20,6 +20,7 @@
 #include "lld/Common/Strings.h"
 #include "lld/Common/Threads.h"
 #include "llvm/ADT/DenseSet.h"
+#include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/BinaryFormat/Wasm.h"
@@ -28,6 +29,7 @@
 #include "llvm/Support/Format.h"
 #include "llvm/Support/FormatVariadic.h"
 #include "llvm/Support/LEB128.h"
+#include "llvm/Support/Path.h"
 
 #include <cstdarg>
 #include <map>
@@ -65,7 +67,9 @@ private:
 
   void createCtorFunction();
   void calculateInitFunctions();
+  void processRelocations(InputChunk *Chunk);
   void assignIndexes();
+  void calculateTargetFeatures();
   void calculateImports();
   void calculateExports();
   void calculateCustomSections();
@@ -97,6 +101,7 @@ private:
   void createLinkingSection();
   void createNameSection();
   void createProducersSection();
+  void createTargetFeaturesSection();
 
   void writeHeader();
   void writeSections();
@@ -127,6 +132,7 @@ private:
 
   llvm::StringMap<std::vector<InputSection *>> CustomSectionMapping;
   llvm::StringMap<SectionSymbol *> CustomSectionSymbols;
+  llvm::SmallSet<std::string, 8> TargetFeatures;
 
   // Elements that are used to construct the final output
   std::string Header;
@@ -198,6 +204,9 @@ void Writer::createImportSection() {
     if (auto *FunctionSym = dyn_cast<FunctionSymbol>(Sym)) {
       Import.Kind = WASM_EXTERNAL_FUNCTION;
       Import.SigIndex = lookupType(*FunctionSym->Signature);
+    } else if (auto *DataSym = dyn_cast<UndefinedData>(Sym)) {
+      Import.Kind = WASM_EXTERNAL_GLOBAL;
+      Import.Global = {WASM_TYPE_I32, true};
     } else if (auto *GlobalSym = dyn_cast<GlobalSymbol>(Sym)) {
       Import.Kind = WASM_EXTERNAL_GLOBAL;
       Import.Global = *GlobalSym->getGlobalType();
@@ -339,7 +348,7 @@ void Writer::calculateCustomSections() {
       // These custom sections are known the linker and synthesized rather than
       // blindly copied
       if (Name == "linking" || Name == "name" || Name == "producers" ||
-          Name.startswith("reloc."))
+          Name == "target_features" || Name.startswith("reloc."))
         continue;
       // .. or it is a debug section
       if (StripDebug && Name.startswith(".debug_"))
@@ -499,7 +508,9 @@ void Writer::createDylinkSection() {
   writeUleb128(OS, MemAlign, "MemAlign");
   writeUleb128(OS, IndirectFunctions.size(), "TableSize");
   writeUleb128(OS, 0, "TableAlign");
-  writeUleb128(OS, 0, "Needed");  // TODO: Support "needed" shared libraries
+  writeUleb128(OS, Symtab->SharedFiles.size(), "Needed");
+  for (auto *SO : Symtab->SharedFiles)
+    writeStr(OS, llvm::sys::path::filename(SO->getName()), "so name");
 }
 
 // Create the custom "linking" section containing linker metadata.
@@ -694,6 +705,23 @@ void Writer::createProducersSection() {
   }
 }
 
+void Writer::createTargetFeaturesSection() {
+  if (TargetFeatures.size() == 0)
+    return;
+
+  SmallVector<std::string, 8> Emitted(TargetFeatures.begin(),
+                                      TargetFeatures.end());
+  std::sort(Emitted.begin(), Emitted.end());
+  SyntheticSection *Section =
+      createSyntheticSection(WASM_SEC_CUSTOM, "target_features");
+  auto &OS = Section->getStream();
+  writeUleb128(OS, Emitted.size(), "feature count");
+  for (auto &Feature : Emitted) {
+    writeU8(OS, WASM_FEATURE_PREFIX_USED, "feature used prefix");
+    writeStr(OS, Feature, "feature name");
+  }
+}
+
 void Writer::writeHeader() {
   memcpy(Buffer->getBufferStart(), Header.data(), Header.size());
 }
@@ -837,8 +865,10 @@ void Writer::createSections() {
   if (!Config->StripDebug && !Config->StripAll)
     createNameSection();
 
-  if (!Config->StripAll)
+  if (!Config->StripAll) {
     createProducersSection();
+    createTargetFeaturesSection();
+  }
 
   for (OutputSection *S : OutputSections) {
     S->setOffset(FileSize);
@@ -847,17 +877,61 @@ void Writer::createSections() {
   }
 }
 
+void Writer::calculateTargetFeatures() {
+  SmallSet<std::string, 8> Required;
+  SmallSet<std::string, 8> Disallowed;
+
+  // Find the sets of used, required, and disallowed features
+  for (ObjFile *File : Symtab->ObjectFiles) {
+    for (auto &Feature : File->getWasmObj()->getTargetFeatures()) {
+      switch (Feature.Prefix) {
+      case WASM_FEATURE_PREFIX_USED:
+        TargetFeatures.insert(Feature.Name);
+        break;
+      case WASM_FEATURE_PREFIX_REQUIRED:
+        TargetFeatures.insert(Feature.Name);
+        Required.insert(Feature.Name);
+        break;
+      case WASM_FEATURE_PREFIX_DISALLOWED:
+        Disallowed.insert(Feature.Name);
+        break;
+      default:
+        error("Unrecognized feature policy prefix " +
+              std::to_string(Feature.Prefix));
+      }
+    }
+  }
+
+  // Validate the required and disallowed constraints for each file
+  for (ObjFile *File : Symtab->ObjectFiles) {
+    SmallSet<std::string, 8> ObjectFeatures;
+    for (auto &Feature : File->getWasmObj()->getTargetFeatures()) {
+      if (Feature.Prefix == WASM_FEATURE_PREFIX_DISALLOWED)
+        continue;
+      ObjectFeatures.insert(Feature.Name);
+      if (Disallowed.count(Feature.Name))
+        error("Target feature \"" + Feature.Name + "\" is disallowed");
+    }
+    for (auto &Feature : Required) {
+      if (!ObjectFeatures.count(Feature))
+        error(Twine("Missing required target feature \"") + Feature + "\"");
+    }
+  }
+}
+
 void Writer::calculateImports() {
   for (Symbol *Sym : Symtab->getSymbols()) {
     if (!Sym->isUndefined())
-      continue;
-    if (isa<DataSymbol>(Sym))
       continue;
     if (Sym->isWeak() && !Config->Relocatable)
       continue;
     if (!Sym->isLive())
       continue;
     if (!Sym->IsUsedInRegularObj)
+      continue;
+    // In relocatable output we don't generate imports for data symbols.
+    // These live only in the symbol table.
+    if (Config->Relocatable && isa<DataSymbol>(Sym))
       continue;
 
     LLVM_DEBUG(dbgs() << "import: " << Sym->getName() << "\n");
@@ -866,6 +940,8 @@ void Writer::calculateImports() {
       F->setFunctionIndex(NumImportedFunctions++);
     else if (auto *G = dyn_cast<GlobalSymbol>(Sym))
       G->setGlobalIndex(NumImportedGlobals++);
+    else if (auto *D = dyn_cast<UndefinedData>(Sym))
+      D->setGlobalIndex(NumImportedGlobals++);
     else
       cast<EventSymbol>(Sym)->setEventIndex(NumImportedEvents++);
   }
@@ -950,7 +1026,7 @@ void Writer::assignSymtab() {
   };
 
   for (Symbol *Sym : Symtab->getSymbols())
-    if (!Sym->isLazy())
+    if (Sym->IsUsedInRegularObj)
       AddSymbol(Sym);
 
   for (ObjFile *File : Symtab->ObjectFiles) {
@@ -1008,6 +1084,43 @@ void Writer::calculateTypes() {
     registerType(E->Signature);
 }
 
+void Writer::processRelocations(InputChunk *Chunk) {
+  if (!Chunk->Live)
+    return;
+  ObjFile *File = Chunk->File;
+  ArrayRef<WasmSignature> Types = File->getWasmObj()->types();
+  for (const WasmRelocation &Reloc : Chunk->getRelocations()) {
+    switch (Reloc.Type) {
+    case R_WASM_TABLE_INDEX_I32:
+    case R_WASM_TABLE_INDEX_SLEB: {
+      FunctionSymbol *Sym = File->getFunctionSymbol(Reloc.Index);
+      if (Sym->hasTableIndex() || !Sym->hasFunctionIndex())
+        continue;
+      Sym->setTableIndex(TableBase + IndirectFunctions.size());
+      IndirectFunctions.emplace_back(Sym);
+      break;
+    }
+    case R_WASM_TYPE_INDEX_LEB:
+      // Mark target type as live
+      File->TypeMap[Reloc.Index] = registerType(Types[Reloc.Index]);
+      File->TypeIsUsed[Reloc.Index] = true;
+      break;
+    case R_WASM_MEMORY_ADDR_SLEB:
+    case R_WASM_MEMORY_ADDR_I32:
+    case R_WASM_MEMORY_ADDR_LEB: {
+      DataSymbol *DataSym = File->getDataSymbol(Reloc.Index);
+      if (!Config->Relocatable && !isa<DefinedData>(DataSym) &&
+          !DataSym->isWeak())
+        error(File->getName() +
+              ": relocation of type R_WASM_MEMORY_ADDR_* "
+              "against undefined data symbol: " +
+              DataSym->getName());
+      break;
+    }
+    }
+  }
+}
+
 void Writer::assignIndexes() {
   assert(InputFunctions.empty());
   uint32_t FunctionIndex = NumImportedFunctions;
@@ -1027,36 +1140,14 @@ void Writer::assignIndexes() {
       AddDefinedFunction(Func);
   }
 
-  uint32_t TableIndex = TableBase;
-  auto HandleRelocs = [&](InputChunk *Chunk) {
-    if (!Chunk->Live)
-      return;
-    ObjFile *File = Chunk->File;
-    ArrayRef<WasmSignature> Types = File->getWasmObj()->types();
-    for (const WasmRelocation &Reloc : Chunk->getRelocations()) {
-      if (Reloc.Type == R_WASM_TABLE_INDEX_I32 ||
-          Reloc.Type == R_WASM_TABLE_INDEX_SLEB) {
-        FunctionSymbol *Sym = File->getFunctionSymbol(Reloc.Index);
-        if (Sym->hasTableIndex() || !Sym->hasFunctionIndex())
-          continue;
-        Sym->setTableIndex(TableIndex++);
-        IndirectFunctions.emplace_back(Sym);
-      } else if (Reloc.Type == R_WASM_TYPE_INDEX_LEB) {
-        // Mark target type as live
-        File->TypeMap[Reloc.Index] = registerType(Types[Reloc.Index]);
-        File->TypeIsUsed[Reloc.Index] = true;
-      }
-    }
-  };
-
   for (ObjFile *File : Symtab->ObjectFiles) {
     LLVM_DEBUG(dbgs() << "Handle relocs: " << File->getName() << "\n");
     for (InputChunk *Chunk : File->Functions)
-      HandleRelocs(Chunk);
+      processRelocations(Chunk);
     for (InputChunk *Chunk : File->Segments)
-      HandleRelocs(Chunk);
+      processRelocations(Chunk);
     for (auto &P : File->CustomSections)
-      HandleRelocs(P);
+      processRelocations(P);
   }
 
   assert(InputGlobals.empty());
@@ -1137,6 +1228,9 @@ static const int OPCODE_END = 0xb;
 // Create synthetic "__wasm_call_ctors" function based on ctor functions
 // in input object.
 void Writer::createCtorFunction() {
+  if (!WasmSym::CallCtors->isLive())
+    return;
+
   // First write the body's contents to a string.
   std::string BodyContent;
   {
@@ -1165,10 +1259,14 @@ void Writer::createCtorFunction() {
 // This is then used either when creating the output linking section or to
 // synthesize the "__wasm_call_ctors" function.
 void Writer::calculateInitFunctions() {
+  if (!Config->Relocatable && !WasmSym::CallCtors->isLive())
+    return;
+
   for (ObjFile *File : Symtab->ObjectFiles) {
     const WasmLinkingData &L = File->getWasmObj()->linkingData();
     for (const WasmInitFunc &F : L.InitFunctions) {
       FunctionSymbol *Sym = File->getFunctionSymbol(F.Symbol);
+      assert(Sym->isLive());
       if (*Sym->Signature != WasmSignature{{}, {}})
         error("invalid signature for init func: " + toString(*Sym));
       InitFunctions.emplace_back(WasmInitEntry{Sym, F.Priority});
@@ -1192,6 +1290,8 @@ void Writer::run() {
   if (!Config->Pic)
     TableBase = 1;
 
+  log("-- calculateTargetFeatures");
+  calculateTargetFeatures();
   log("-- calculateImports");
   calculateImports();
   log("-- assignIndexes");

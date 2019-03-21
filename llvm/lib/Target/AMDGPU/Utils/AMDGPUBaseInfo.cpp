@@ -802,9 +802,11 @@ unsigned getRegBitWidth(unsigned RCID) {
   switch (RCID) {
   case AMDGPU::SGPR_32RegClassID:
   case AMDGPU::VGPR_32RegClassID:
+  case AMDGPU::VRegOrLds_32RegClassID:
   case AMDGPU::VS_32RegClassID:
   case AMDGPU::SReg_32RegClassID:
   case AMDGPU::SReg_32_XM0RegClassID:
+  case AMDGPU::SRegOrLds_32RegClassID:
     return 32;
   case AMDGPU::SGPR_64RegClassID:
   case AMDGPU::VS_64RegClassID:
@@ -812,6 +814,8 @@ unsigned getRegBitWidth(unsigned RCID) {
   case AMDGPU::VReg_64RegClassID:
   case AMDGPU::SReg_64_XEXECRegClassID:
     return 64;
+  case AMDGPU::SGPR_96RegClassID:
+  case AMDGPU::SReg_96RegClassID:
   case AMDGPU::VReg_96RegClassID:
     return 96;
   case AMDGPU::SGPR_128RegClassID:

@@ -52,6 +52,7 @@
 #include "llvm/IR/Intrinsics.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Module.h"
+#include "llvm/IR/ProfileSummary.h"
 #include "llvm/ProfileData/InstrProfReader.h"
 #include "llvm/Support/CodeGen.h"
 #include "llvm/Support/ConvertUTF.h"
@@ -417,7 +418,9 @@ void CodeGenModule::Release() {
     OpenMPRuntime->clear();
   }
   if (PGOReader) {
-    getModule().setProfileSummary(PGOReader->getSummary().getMD(VMContext));
+    getModule().setProfileSummary(
+        PGOReader->getSummary(/* UseCS */ false).getMD(VMContext),
+        llvm::ProfileSummary::PSK_Instr);
     if (PGOStats.hasDiagnostics())
       PGOStats.reportDiagnostics(getDiags(), getCodeGenOpts().MainFileName);
   }
@@ -4403,6 +4406,8 @@ CodeGenModule::GetAddrOfConstantCFString(const StringLiteral *Literal) {
   switch (Triple.getObjectFormat()) {
   case llvm::Triple::UnknownObjectFormat:
     llvm_unreachable("unknown file format");
+  case llvm::Triple::XCOFF:
+    llvm_unreachable("XCOFF is not yet implemented");
   case llvm::Triple::COFF:
   case llvm::Triple::ELF:
   case llvm::Triple::Wasm:
@@ -5057,6 +5062,9 @@ void CodeGenModule::EmitTopLevelDecl(Decl *D) {
 
   case Decl::OMPThreadPrivate:
     EmitOMPThreadPrivateDecl(cast<OMPThreadPrivateDecl>(D));
+    break;
+
+  case Decl::OMPAllocate:
     break;
 
   case Decl::OMPDeclareReduction:

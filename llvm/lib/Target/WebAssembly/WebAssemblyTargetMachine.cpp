@@ -191,6 +191,12 @@ public:
   void addPostRegAlloc() override;
   bool addGCPasses() override { return false; }
   void addPreEmitPass() override;
+
+  // No reg alloc
+  bool addRegAssignmentFast() override { return false; }
+
+  // No reg alloc
+  bool addRegAssignmentOptimized() override { return false; }
 };
 } // end anonymous namespace
 
@@ -289,6 +295,10 @@ void WebAssemblyPassConfig::addPostRegAlloc() {
   disablePass(&LiveDebugValuesID);
   disablePass(&PatchableFunctionID);
   disablePass(&ShrinkWrapID);
+
+  // This pass hurts code size for wasm because it can generate irreducible
+  // control flow.
+  disablePass(&MachineBlockPlacementID);
 
   TargetPassConfig::addPostRegAlloc();
 }

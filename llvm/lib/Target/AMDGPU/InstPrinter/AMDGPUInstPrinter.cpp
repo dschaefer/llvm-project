@@ -268,6 +268,21 @@ void AMDGPUInstPrinter::printRegOperand(unsigned RegNo, raw_ostream &O,
   case AMDGPU::XNACK_MASK:
     O << "xnack_mask";
     return;
+  case AMDGPU::SRC_SHARED_BASE:
+    O << "src_shared_base";
+    return;
+  case AMDGPU::SRC_SHARED_LIMIT:
+    O << "src_shared_limit";
+    return;
+  case AMDGPU::SRC_PRIVATE_BASE:
+    O << "src_private_base";
+    return;
+  case AMDGPU::SRC_PRIVATE_LIMIT:
+    O << "src_private_limit";
+    return;
+  case AMDGPU::SRC_POPS_EXITING_WAVE_ID:
+    O << "src_pops_exiting_wave_id";
+    return;
   case AMDGPU::LDS_DIRECT:
     O << "src_lds_direct";
     return;
@@ -1097,7 +1112,7 @@ void AMDGPUInstPrinter::printSwizzle(const MCInst *MI, unsigned OpNo,
   if ((Imm & QUAD_PERM_ENC_MASK) == QUAD_PERM_ENC) {
 
     O << "swizzle(" << IdSymbolic[ID_QUAD_PERM];
-    for (auto i = 0; i < LANE_NUM; ++i) {
+    for (unsigned I = 0; I < LANE_NUM; ++I) {
       O << ",";
       O << formatDec(Imm & LANE_MASK);
       Imm >>= LANE_SHIFT;
@@ -1207,6 +1222,17 @@ void AMDGPUInstPrinter::printHwreg(const MCInst *MI, unsigned OpNo,
     O << ", " << Offset << ", " << Width;
   }
   O << ')';
+}
+
+void AMDGPUInstPrinter::printEndpgm(const MCInst *MI, unsigned OpNo,
+                                    const MCSubtargetInfo &STI,
+                                    raw_ostream &O) {
+  uint16_t Imm = MI->getOperand(OpNo).getImm();
+  if (Imm == 0) {
+    return;
+  }
+
+  O << formatDec(Imm);
 }
 
 #include "AMDGPUGenAsmWriter.inc"

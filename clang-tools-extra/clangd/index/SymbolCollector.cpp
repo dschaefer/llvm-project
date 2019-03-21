@@ -211,7 +211,7 @@ getTokenLocation(SourceLocation TokLoc, const SourceManager &SM,
 // the first seen declaration as canonical declaration is not a good enough
 // heuristic.
 bool isPreferredDeclaration(const NamedDecl &ND, index::SymbolRoleSet Roles) {
-  const auto& SM = ND.getASTContext().getSourceManager();
+  const auto &SM = ND.getASTContext().getSourceManager();
   return (Roles & static_cast<unsigned>(index::SymbolRole::Definition)) &&
          isa<TagDecl>(&ND) &&
          !SM.isWrittenInMainFile(SM.getExpansionLoc(ND.getLocation()));
@@ -219,13 +219,6 @@ bool isPreferredDeclaration(const NamedDecl &ND, index::SymbolRoleSet Roles) {
 
 RefKind toRefKind(index::SymbolRoleSet Roles) {
   return static_cast<RefKind>(static_cast<unsigned>(RefKind::All) & Roles);
-}
-
-template <class T> bool explicitTemplateSpecialization(const NamedDecl &ND) {
-  if (const auto *TD = dyn_cast<T>(&ND))
-    if (TD->getTemplateSpecializationKind() == TSK_ExplicitSpecialization)
-      return true;
-  return false;
 }
 
 } // namespace
@@ -279,10 +272,6 @@ bool SymbolCollector::shouldCollectSymbol(const NamedDecl &ND,
     if (!isa<RecordDecl>(DeclCtx))
       return false;
   }
-  if (explicitTemplateSpecialization<FunctionDecl>(ND) ||
-      explicitTemplateSpecialization<CXXRecordDecl>(ND) ||
-      explicitTemplateSpecialization<VarDecl>(ND))
-    return false;
 
   // Avoid indexing internal symbols in protobuf generated headers.
   if (isPrivateProtoDecl(ND))
@@ -304,6 +293,10 @@ bool SymbolCollector::handleDeclOccurence(
   if ((ASTNode.OrigD->getFriendObjectKind() !=
        Decl::FriendObjectKind::FOK_None) &&
       !(Roles & static_cast<unsigned>(index::SymbolRole::Definition)))
+    return true;
+  // Skip non-semantic references, we should start processing these when we
+  // decide to implement renaming with index support.
+  if ((Roles & static_cast<unsigned>(index::SymbolRole::NameReference)))
     return true;
   // A declaration created for a friend declaration should not be used as the
   // canonical declaration in the index. Use OrigD instead, unless we've already
@@ -333,8 +326,8 @@ bool SymbolCollector::handleDeclOccurence(
 
   // ND is the canonical (i.e. first) declaration. If it's in the main file,
   // then no public declaration was visible, so assume it's main-file only.
-  bool IsMainFileOnly = SM.isWrittenInMainFile(SM.getExpansionLoc(
-    ND->getBeginLoc()));
+  bool IsMainFileOnly =
+      SM.isWrittenInMainFile(SM.getExpansionLoc(ND->getBeginLoc()));
   if (!shouldCollectSymbol(*ND, *ASTCtx, Opts, IsMainFileOnly))
     return true;
   // Do not store references to main-file symbols.
@@ -523,8 +516,7 @@ void SymbolCollector::finish() {
   FilesToIndexCache.clear();
 }
 
-const Symbol *SymbolCollector::addDeclaration(const NamedDecl &ND,
-                                              SymbolID ID,
+const Symbol *SymbolCollector::addDeclaration(const NamedDecl &ND, SymbolID ID,
                                               bool IsMainFileOnly) {
   auto &Ctx = ND.getASTContext();
   auto &SM = Ctx.getSourceManager();

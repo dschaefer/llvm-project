@@ -61,7 +61,7 @@ target triple = "wasm32-unknown-unknown"
 ; CHECK-NEXT:         Flags:           [  ]
 ; CHECK-NEXT:         Segment:         3
 ; CHECK-NEXT:         Size:            0
-; CHECK-NEXT:     SegmentInfo:    
+; CHECK-NEXT:     SegmentInfo:
 ; CHECK-NEXT:       - Index:           0
 ; CHECK-NEXT:         Name:            .bss.g0
 ; CHECK-NEXT:         Alignment:       2
@@ -78,4 +78,9 @@ target triple = "wasm32-unknown-unknown"
 ; CHECK-NEXT:         Name:            .bss.bar
 ; CHECK-NEXT:         Alignment:       0
 ; CHECK-NEXT:         Flags:           [ ]
+; CHECK-NEXT:   - Type:            CUSTOM
+; CHECK-NEXT:     Name:            target_features
+; CHECK-NEXT:     Features:
+; CHECK-NEXT:       - Prefix:          DISALLOWED
+; CHECK-NEXT:         Name:            atomics
 ; CHECK-NEXT: ...

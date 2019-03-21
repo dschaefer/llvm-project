@@ -26,34 +26,55 @@ u32 GetMallocContextSize() {
   return atomic_load(&malloc_context_size, memory_order_acquire);
 }
 
-}  // namespace __asan
+namespace {
 
-void __sanitizer::GetStackTrace(BufferedStackTrace *stack, uptr max_depth,
-                                uptr pc, uptr bp, void *context, bool fast) {
-  using namespace __asan;
-#if SANITIZER_WINDOWS
-  stack->Unwind(max_depth, pc, 0, context, 0, 0, false);
-#else
-  AsanThread *t;
-  stack->size = 0;
-  if (LIKELY(asan_inited)) {
-    if ((t = GetCurrentThread()) && !t->isUnwinding()) {
-      uptr stack_top = t->stack_top();
-      uptr stack_bottom = t->stack_bottom();
-      ScopedUnwinding unwind_scope(t);
-      if (!SANITIZER_MIPS || IsValidFrame(bp, stack_top, stack_bottom)) {
-        if (StackTrace::WillUseFastUnwind(fast))
-          stack->Unwind(max_depth, pc, bp, nullptr, stack_top, stack_bottom,
-                      true);
-        else
-          stack->Unwind(max_depth, pc, 0, context, 0, 0, false);
-      }
-    } else if (!t && !fast) {
-      /* If GetCurrentThread() has failed, try to do slow unwind anyways. */
-      stack->Unwind(max_depth, pc, bp, context, 0, 0, false);
+// ScopedUnwinding is a scope for stacktracing member of a context
+class ScopedUnwinding {
+ public:
+  explicit ScopedUnwinding(AsanThread *t) : thread(t) {
+    if (thread) {
+      can_unwind = !thread->isUnwinding();
+      thread->setUnwinding(true);
     }
   }
-#endif // SANITIZER_WINDOWS
+  ~ScopedUnwinding() {
+    if (thread)
+      thread->setUnwinding(false);
+  }
+
+  bool CanUnwind() const { return can_unwind; }
+
+ private:
+  AsanThread *thread = nullptr;
+  bool can_unwind = true;
+};
+
+}  // namespace
+
+}  // namespace __asan
+
+void __sanitizer::BufferedStackTrace::UnwindImpl(
+    uptr pc, uptr bp, void *context, bool request_fast, u32 max_depth) {
+  using namespace __asan;
+  size = 0;
+  if (UNLIKELY(!asan_inited))
+    return;
+  request_fast = StackTrace::WillUseFastUnwind(request_fast);
+  AsanThread *t = GetCurrentThread();
+  ScopedUnwinding unwind_scope(t);
+  if (!unwind_scope.CanUnwind())
+    return;
+  if (request_fast) {
+    if (t) {
+      Unwind(max_depth, pc, bp, nullptr, t->stack_top(), t->stack_bottom(),
+             true);
+    }
+    return;
+  }
+  if (SANITIZER_MIPS && t &&
+      !IsValidFrame(bp, t->stack_top(), t->stack_bottom()))
+    return;
+  Unwind(max_depth, pc, bp, context, 0, 0, false);
 }
 
 // ------------------ Interface -------------- {{{1

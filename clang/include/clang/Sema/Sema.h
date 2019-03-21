@@ -2634,13 +2634,6 @@ public:
   bool IsOverload(FunctionDecl *New, FunctionDecl *Old, bool IsForUsingDecl,
                   bool ConsiderCudaAttrs = true);
 
-  /// Checks availability of the function depending on the current
-  /// function context.Inside an unavailable function,unavailability is ignored.
-  ///
-  /// \returns true if \p FD is unavailable and current context is inside
-  /// an available function, false otherwise.
-  bool isFunctionConsideredUnavailable(FunctionDecl *FD);
-
   ImplicitConversionSequence
   TryImplicitConversion(Expr *From, QualType ToType,
                         bool SuppressUserConversions,
@@ -4102,7 +4095,6 @@ public:
                          ObjCInterfaceDecl *ClassReciever = nullptr);
   void NoteDeletedFunction(FunctionDecl *FD);
   void NoteDeletedInheritingConstructor(CXXConstructorDecl *CD);
-  std::string getDeletedOrUnavailableSuffix(const FunctionDecl *FD);
   bool DiagnosePropertyAccessorMismatch(ObjCPropertyDecl *PD,
                                         ObjCMethodDecl *Getter,
                                         SourceLocation Loc);
@@ -8879,9 +8871,9 @@ public:
   // OpenMP directives and clauses.
   /// Called on correct id-expression from the '#pragma omp
   /// threadprivate'.
-  ExprResult ActOnOpenMPIdExpression(Scope *CurScope,
-                                     CXXScopeSpec &ScopeSpec,
-                                     const DeclarationNameInfo &Id);
+  ExprResult ActOnOpenMPIdExpression(Scope *CurScope, CXXScopeSpec &ScopeSpec,
+                                     const DeclarationNameInfo &Id,
+                                     OpenMPDirectiveKind Kind);
   /// Called on well-formed '#pragma omp threadprivate'.
   DeclGroupPtrTy ActOnOpenMPThreadprivateDirective(
                                      SourceLocation Loc,
@@ -8889,6 +8881,11 @@ public:
   /// Builds a new OpenMPThreadPrivateDecl and checks its correctness.
   OMPThreadPrivateDecl *CheckOMPThreadPrivateDecl(SourceLocation Loc,
                                                   ArrayRef<Expr *> VarList);
+  /// Called on well-formed '#pragma omp allocate'.
+  DeclGroupPtrTy ActOnOpenMPAllocateDirective(SourceLocation Loc,
+                                              ArrayRef<Expr *> VarList,
+                                              ArrayRef<OMPClause *> Clauses,
+                                              DeclContext *Owner = nullptr);
   /// Called on well-formed '#pragma omp requires'.
   DeclGroupPtrTy ActOnOpenMPRequiresDirective(SourceLocation Loc,
                                               ArrayRef<OMPClause *> ClauseList);
@@ -9243,6 +9240,11 @@ public:
                                          SourceLocation StartLoc,
                                          SourceLocation LParenLoc,
                                          SourceLocation EndLoc);
+  /// Called on well-formed 'allocator' clause.
+  OMPClause *ActOnOpenMPAllocatorClause(Expr *Allocator,
+                                        SourceLocation StartLoc,
+                                        SourceLocation LParenLoc,
+                                        SourceLocation EndLoc);
   /// Called on well-formed 'if' clause.
   OMPClause *ActOnOpenMPIfClause(OpenMPDirectiveKind NameModifier,
                                  Expr *Condition, SourceLocation StartLoc,
@@ -10665,6 +10667,7 @@ private:
 
   ExprResult CheckBuiltinFunctionCall(FunctionDecl *FDecl,
                                       unsigned BuiltinID, CallExpr *TheCall);
+  void checkFortifiedBuiltinMemoryFunction(FunctionDecl *FD, CallExpr *TheCall);
 
   bool CheckARMBuiltinExclusiveCall(unsigned BuiltinID, CallExpr *TheCall,
                                     unsigned MaxWidth);
@@ -11014,6 +11017,15 @@ public:
       Expr *E,
       llvm::function_ref<void(Expr *, RecordDecl *, FieldDecl *, CharUnits)>
           Action);
+
+  /// Describes the reason a calling convention specification was ignored, used
+  /// for diagnostics.
+  enum class CallingConventionIgnoredReason {
+    ForThisTarget = 0,
+    VariadicFunction,
+    ConstructorDestructor,
+    BuiltinFunction
+  };
 };
 
 /// RAII object that enters a new expression evaluation context.

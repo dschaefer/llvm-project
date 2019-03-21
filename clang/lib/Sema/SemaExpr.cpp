@@ -333,17 +333,6 @@ bool Sema::DiagnoseUseOfDecl(NamedDecl *D, ArrayRef<SourceLocation> Locs,
   return false;
 }
 
-/// Retrieve the message suffix that should be added to a
-/// diagnostic complaining about the given function being deleted or
-/// unavailable.
-std::string Sema::getDeletedOrUnavailableSuffix(const FunctionDecl *FD) {
-  std::string Message;
-  if (FD->getAvailability(&Message))
-    return ": " + Message;
-
-  return std::string();
-}
-
 /// DiagnoseSentinelCalls - This routine checks whether a call or
 /// message-send is to a declaration with the sentinel attribute, and
 /// if so, it checks that the requirements of the sentinel are
@@ -2660,10 +2649,15 @@ Sema::PerformObjectMemberConversion(Expr *From,
   bool PointerConversions = false;
   if (isa<FieldDecl>(Member)) {
     DestRecordType = Context.getCanonicalType(Context.getTypeDeclType(RD));
+    auto FromPtrType = FromType->getAs<PointerType>();
+    DestRecordType = Context.getAddrSpaceQualType(
+        DestRecordType, FromPtrType
+                            ? FromType->getPointeeType().getAddressSpace()
+                            : FromType.getAddressSpace());
 
-    if (FromType->getAs<PointerType>()) {
+    if (FromPtrType) {
       DestType = Context.getPointerType(DestRecordType);
-      FromRecordType = FromType->getPointeeType();
+      FromRecordType = FromPtrType->getPointeeType();
       PointerConversions = true;
     } else {
       DestType = DestRecordType;
@@ -2993,7 +2987,6 @@ ExprResult Sema::BuildDeclarationNameExpr(
 
     // These shouldn't make it here.
     case Decl::ObjCAtDefsField:
-    case Decl::ObjCIvar:
       llvm_unreachable("forming non-member reference to ivar?");
 
     // Enum constants are always r-values and never references.
@@ -3011,6 +3004,7 @@ ExprResult Sema::BuildDeclarationNameExpr(
     // exist in the high-level semantics.
     case Decl::Field:
     case Decl::IndirectField:
+    case Decl::ObjCIvar:
       assert(getLangOpts().CPlusPlus &&
              "building reference to field in C?");
 
@@ -5926,6 +5920,8 @@ ExprResult Sema::BuildResolvedCallExpr(Expr *Fn, NamedDecl *NDecl,
     if (CheckFunctionCall(FDecl, TheCall, Proto))
       return ExprError();
 
+    checkFortifiedBuiltinMemoryFunction(FDecl, TheCall);
+
     if (BuiltinID)
       return CheckBuiltinFunctionCall(FDecl, BuiltinID, TheCall);
   } else if (NDecl) {
@@ -6152,6 +6148,7 @@ CastKind Sema::PrepareScalarCast(ExprResult &Src, QualType DestTy) {
     case Type::STK_Bool:
       return CK_FixedPointToBoolean;
     case Type::STK_Integral:
+      return CK_FixedPointToIntegral;
     case Type::STK_Floating:
     case Type::STK_IntegralComplex:
     case Type::STK_FloatingComplex:
@@ -6196,10 +6193,7 @@ CastKind Sema::PrepareScalarCast(ExprResult &Src, QualType DestTy) {
     case Type::STK_MemberPointer:
       llvm_unreachable("member pointer type in C");
     case Type::STK_FixedPoint:
-      Diag(Src.get()->getExprLoc(),
-           diag::err_unimplemented_conversion_with_fixed_point_type)
-          << SrcTy;
-      return CK_IntegralCast;
+      return CK_IntegralToFixedPoint;
     }
     llvm_unreachable("Should have returned before this");
 
@@ -14798,6 +14792,9 @@ void Sema::MarkFunctionReferenced(SourceLocation Loc, FunctionDecl *Func,
   const FunctionProtoType *FPT = Func->getType()->getAs<FunctionProtoType>();
   if (FPT && isUnresolvedExceptionSpec(FPT->getExceptionSpecType()))
     ResolveExceptionSpec(Loc, FPT);
+
+  if (getLangOpts().CUDA)
+    CheckCUDACall(Loc, Func);
 
   // If we don't need to mark the function as used, and we don't need to
   // try to provide a definition, there's nothing more to do.
