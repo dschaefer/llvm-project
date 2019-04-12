@@ -11,7 +11,9 @@
 #include "CodeComplete.h"
 #include "FindSymbols.h"
 #include "Headers.h"
+#include "Protocol.h"
 #include "SourceCode.h"
+#include "TUScheduler.h"
 #include "Trace.h"
 #include "index/CanonicalIncludes.h"
 #include "index/FileIndex.h"
@@ -114,7 +116,6 @@ ClangdServer::ClangdServer(const GlobalCompilationDatabase &CDB,
       ClangTidyOptProvider(Opts.ClangTidyOptProvider),
       SuggestMissingIncludes(Opts.SuggestMissingIncludes),
       WorkspaceRoot(Opts.WorkspaceRoot),
-      PCHs(std::make_shared<PCHContainerOperations>()),
       // Pass a callback into `WorkScheduler` to extract symbols from a newly
       // parsed file and rebuild the file index synchronously each time an AST
       // is parsed.
@@ -153,6 +154,7 @@ void ClangdServer::addDocument(PathRef File, llvm::StringRef Contents,
   if (ClangTidyOptProvider)
     Opts.ClangTidyOpts = ClangTidyOptProvider->getOptions(File);
   Opts.SuggestMissingIncludes = SuggestMissingIncludes;
+
   // FIXME: some build systems like Bazel will take time to preparing
   // environment to build the file, it would be nice if we could emit a
   // "PreparingBuild" status to inform users, it is non-trivial given the
@@ -176,11 +178,8 @@ void ClangdServer::codeComplete(PathRef File, Position Pos,
   if (!CodeCompleteOpts.Index) // Respect overridden index.
     CodeCompleteOpts.Index = Index;
 
-  // Copy PCHs to avoid accessing this->PCHs concurrently
-  std::shared_ptr<PCHContainerOperations> PCHs = this->PCHs;
   auto FS = FSProvider.getFileSystem();
-
-  auto Task = [PCHs, Pos, FS, CodeCompleteOpts,
+  auto Task = [Pos, FS, CodeCompleteOpts,
                this](Path File, Callback<CodeCompleteResult> CB,
                      llvm::Expected<InputsAndPreamble> IP) {
     if (!IP)
@@ -189,18 +188,25 @@ void ClangdServer::codeComplete(PathRef File, Position Pos,
       return CB(llvm::make_error<CancelledError>());
 
     llvm::Optional<SpeculativeFuzzyFind> SpecFuzzyFind;
-    if (CodeCompleteOpts.Index && CodeCompleteOpts.SpeculativeIndexRequest) {
-      SpecFuzzyFind.emplace();
-      {
-        std::lock_guard<std::mutex> Lock(CachedCompletionFuzzyFindRequestMutex);
-        SpecFuzzyFind->CachedReq = CachedCompletionFuzzyFindRequestByFile[File];
+    if (!IP->Preamble) {
+      // No speculation in Fallback mode, as it's supposed to be much faster
+      // without compiling.
+      vlog("Build for file {0} is not ready. Enter fallback mode.", File);
+    } else {
+      if (CodeCompleteOpts.Index && CodeCompleteOpts.SpeculativeIndexRequest) {
+        SpecFuzzyFind.emplace();
+        {
+          std::lock_guard<std::mutex> Lock(
+              CachedCompletionFuzzyFindRequestMutex);
+          SpecFuzzyFind->CachedReq =
+              CachedCompletionFuzzyFindRequestByFile[File];
+        }
       }
     }
-
     // FIXME(ibiryukov): even if Preamble is non-null, we may want to check
     // both the old and the new version in case only one of them matches.
     CodeCompleteResult Result = clangd::codeComplete(
-        File, IP->Command, IP->Preamble, IP->Contents, Pos, FS, PCHs,
+        File, IP->Command, IP->Preamble, IP->Contents, Pos, FS,
         CodeCompleteOpts, SpecFuzzyFind ? SpecFuzzyFind.getPointer() : nullptr);
     {
       clang::clangd::trace::Span Tracer("Completion results callback");
@@ -218,24 +224,25 @@ void ClangdServer::codeComplete(PathRef File, Position Pos,
   };
 
   // We use a potentially-stale preamble because latency is critical here.
-  WorkScheduler.runWithPreamble("CodeComplete", File, TUScheduler::Stale,
+  WorkScheduler.runWithPreamble("CodeComplete", File,
+                                Opts.AllowFallback ? TUScheduler::StaleOrAbsent
+                                                   : TUScheduler::Stale,
                                 Bind(Task, File.str(), std::move(CB)));
 }
 
 void ClangdServer::signatureHelp(PathRef File, Position Pos,
                                  Callback<SignatureHelp> CB) {
 
-  auto PCHs = this->PCHs;
   auto FS = FSProvider.getFileSystem();
   auto *Index = this->Index;
-  auto Action = [Pos, FS, PCHs, Index](Path File, Callback<SignatureHelp> CB,
-                                       llvm::Expected<InputsAndPreamble> IP) {
+  auto Action = [Pos, FS, Index](Path File, Callback<SignatureHelp> CB,
+                                 llvm::Expected<InputsAndPreamble> IP) {
     if (!IP)
       return CB(IP.takeError());
 
     auto PreambleData = IP->Preamble;
     CB(clangd::signatureHelp(File, IP->Command, PreambleData, IP->Contents, Pos,
-                             FS, PCHs, Index));
+                             FS, Index));
   };
 
   // Unlike code completion, we wait for an up-to-date preamble here.
@@ -280,9 +287,9 @@ ClangdServer::formatOnType(llvm::StringRef Code, PathRef File, Position Pos) {
 }
 
 void ClangdServer::rename(PathRef File, Position Pos, llvm::StringRef NewName,
-                          Callback<std::vector<tooling::Replacement>> CB) {
+                          Callback<std::vector<TextEdit>> CB) {
   auto Action = [Pos](Path File, std::string NewName,
-                      Callback<std::vector<tooling::Replacement>> CB,
+                      Callback<std::vector<TextEdit>> CB,
                       llvm::Expected<InputsAndAST> InpAST) {
     if (!InpAST)
       return CB(InpAST.takeError());
@@ -306,7 +313,7 @@ void ClangdServer::rename(PathRef File, Position Pos, llvm::StringRef NewName,
     if (!ResultCollector.Result.getValue())
       return CB(ResultCollector.Result->takeError());
 
-    std::vector<tooling::Replacement> Replacements;
+    std::vector<TextEdit> Replacements;
     for (const tooling::AtomicChange &Change : ResultCollector.Result->get()) {
       tooling::Replacements ChangeReps = Change.getReplacements();
       for (const auto &Rep : ChangeReps) {
@@ -320,7 +327,8 @@ void ClangdServer::rename(PathRef File, Position Pos, llvm::StringRef NewName,
         //   * rename globally in project
         //   * rename in open files
         if (Rep.getFilePath() == File)
-          Replacements.push_back(Rep);
+          Replacements.push_back(
+              replacementToEdit(InpAST->Inputs.Contents, Rep));
       }
     }
     return CB(std::move(Replacements));

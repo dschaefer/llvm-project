@@ -881,14 +881,30 @@ unsigned ContinuationIndenter::addTokenOnNewLine(LineState &State,
     State.Stack.back().BreakBeforeClosingBrace = true;
 
   if (State.Stack.back().AvoidBinPacking) {
-    // If we are breaking after '(', '{', '<', this is not bin packing
-    // unless AllowAllParametersOfDeclarationOnNextLine is false or this is a
-    // dict/object literal.
-    if (!Previous.isOneOf(tok::l_paren, tok::l_brace, TT_BinaryOperator) ||
+    // If we are breaking after '(', '{', '<', or this is the break after a ':'
+    // to start a member initializater list in a constructor, this should not
+    // be considered bin packing unless the relevant AllowAll option is false or
+    // this is a dict/object literal.
+    bool PreviousIsBreakingCtorInitializerColon =
+        Previous.is(TT_CtorInitializerColon) &&
+        Style.BreakConstructorInitializers == FormatStyle::BCIS_AfterColon;
+    if (!(Previous.isOneOf(tok::l_paren, tok::l_brace, TT_BinaryOperator) ||
+          PreviousIsBreakingCtorInitializerColon) ||
         (!Style.AllowAllParametersOfDeclarationOnNextLine &&
          State.Line->MustBeDeclaration) ||
+        (!Style.AllowAllArgumentsOnNextLine &&
+         !State.Line->MustBeDeclaration) ||
+        (!Style.AllowAllConstructorInitializersOnNextLine &&
+         PreviousIsBreakingCtorInitializerColon) ||
         Previous.is(TT_DictLiteral))
       State.Stack.back().BreakBeforeParameter = true;
+
+    // If we are breaking after a ':' to start a member initializer list,
+    // and we allow all arguments on the next line, we should not break
+    // before the next parameter.
+    if (PreviousIsBreakingCtorInitializerColon &&
+        Style.AllowAllConstructorInitializersOnNextLine)
+      State.Stack.back().BreakBeforeParameter = false;
   }
 
   return Penalty;
@@ -929,18 +945,24 @@ unsigned ContinuationIndenter::getNewLineColumn(const LineState &State) {
       return State.Stack[State.Stack.size() - 2].LastSpace;
     return State.FirstIndent;
   }
-  // Indent a closing parenthesis at the previous level if followed by a semi or
-  // opening brace. This allows indentations such as:
+  // Indent a closing parenthesis at the previous level if followed by a semi,
+  // const, or opening brace. This allows indentations such as:
   //     foo(
   //       a,
   //     );
+  //     int Foo::getter(
+  //         //
+  //     ) const {
+  //       return foo;
+  //     }
   //     function foo(
   //       a,
   //     ) {
   //       code(); //
   //     }
   if (Current.is(tok::r_paren) && State.Stack.size() > 1 &&
-      (!Current.Next || Current.Next->isOneOf(tok::semi, tok::l_brace)))
+      (!Current.Next ||
+       Current.Next->isOneOf(tok::semi, tok::kw_const, tok::l_brace)))
     return State.Stack[State.Stack.size() - 2].LastSpace;
   if (NextNonComment->is(TT_TemplateString) && NextNonComment->closesScope())
     return State.Stack[State.Stack.size() - 2].LastSpace;
@@ -1041,7 +1063,7 @@ unsigned ContinuationIndenter::getNewLineColumn(const LineState &State) {
   if (Current.is(TT_ProtoExtensionLSquare))
     return State.Stack.back().Indent;
   if (State.Stack.back().Indent == State.FirstIndent && PreviousNonComment &&
-      PreviousNonComment->isNot(tok::r_brace))
+      !PreviousNonComment->isOneOf(tok::r_brace, TT_CtorInitializerComma))
     // Ensure that we fall back to the continuation indent width instead of
     // just flushing continuations left.
     return State.Stack.back().Indent + Style.ContinuationIndentWidth;
@@ -1102,9 +1124,13 @@ unsigned ContinuationIndenter::moveStateToNextToken(LineState &State,
              ? 0
              : 2);
     State.Stack.back().NestedBlockIndent = State.Stack.back().Indent;
-    if (Style.ConstructorInitializerAllOnOneLineOrOnePerLine)
+    if (Style.ConstructorInitializerAllOnOneLineOrOnePerLine) {
       State.Stack.back().AvoidBinPacking = true;
-    State.Stack.back().BreakBeforeParameter = false;
+      State.Stack.back().BreakBeforeParameter =
+          !Style.AllowAllConstructorInitializersOnNextLine;
+    } else {
+      State.Stack.back().BreakBeforeParameter = false;
+    }
   }
   if (Current.is(TT_CtorInitializerColon) &&
       Style.BreakConstructorInitializers == FormatStyle::BCIS_AfterColon) {

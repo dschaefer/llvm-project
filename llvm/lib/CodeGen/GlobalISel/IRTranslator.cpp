@@ -152,36 +152,6 @@ void IRTranslator::getAnalysisUsage(AnalysisUsage &AU) const {
   MachineFunctionPass::getAnalysisUsage(AU);
 }
 
-static void computeValueLLTs(const DataLayout &DL, Type &Ty,
-                             SmallVectorImpl<LLT> &ValueTys,
-                             SmallVectorImpl<uint64_t> *Offsets = nullptr,
-                             uint64_t StartingOffset = 0) {
-  // Given a struct type, recursively traverse the elements.
-  if (StructType *STy = dyn_cast<StructType>(&Ty)) {
-    const StructLayout *SL = DL.getStructLayout(STy);
-    for (unsigned I = 0, E = STy->getNumElements(); I != E; ++I)
-      computeValueLLTs(DL, *STy->getElementType(I), ValueTys, Offsets,
-                       StartingOffset + SL->getElementOffset(I));
-    return;
-  }
-  // Given an array type, recursively traverse the elements.
-  if (ArrayType *ATy = dyn_cast<ArrayType>(&Ty)) {
-    Type *EltTy = ATy->getElementType();
-    uint64_t EltSize = DL.getTypeAllocSize(EltTy);
-    for (unsigned i = 0, e = ATy->getNumElements(); i != e; ++i)
-      computeValueLLTs(DL, *EltTy, ValueTys, Offsets,
-                       StartingOffset + i * EltSize);
-    return;
-  }
-  // Interpret void as zero return values.
-  if (Ty.isVoidTy())
-    return;
-  // Base case: we can get an LLT for this LLVM IR type.
-  ValueTys.push_back(getLLTForType(Ty, DL));
-  if (Offsets != nullptr)
-    Offsets->push_back(StartingOffset * 8);
-}
-
 IRTranslator::ValueToVRegInfo::VRegListT &
 IRTranslator::allocateVRegs(const Value &Val) {
   assert(!VMap.contains(Val) && "Value already allocated in VMap");
@@ -565,8 +535,7 @@ bool IRTranslator::translateExtractValue(const User &U,
   uint64_t Offset = getOffsetFromIndices(U, *DL);
   ArrayRef<unsigned> SrcRegs = getOrCreateVRegs(*Src);
   ArrayRef<uint64_t> Offsets = *VMap.getOffsets(*Src);
-  unsigned Idx = std::lower_bound(Offsets.begin(), Offsets.end(), Offset) -
-                 Offsets.begin();
+  unsigned Idx = llvm::lower_bound(Offsets, Offset) - Offsets.begin();
   auto &DstRegs = allocateVRegs(U);
 
   for (unsigned i = 0; i < DstRegs.size(); ++i)
@@ -1046,6 +1015,34 @@ bool IRTranslator::translateKnownIntrinsic(const CallInst &CI, Intrinsic::ID ID,
                                   PtrTy.getSizeInBits() / 8, 8));
     return true;
   }
+  case Intrinsic::stacksave: {
+    // Save the stack pointer to the location provided by the intrinsic.
+    unsigned Reg = getOrCreateVReg(CI);
+    unsigned StackPtr = MF->getSubtarget()
+                            .getTargetLowering()
+                            ->getStackPointerRegisterToSaveRestore();
+
+    // If the target doesn't specify a stack pointer, then fall back.
+    if (!StackPtr)
+      return false;
+
+    MIRBuilder.buildCopy(Reg, StackPtr);
+    return true;
+  }
+  case Intrinsic::stackrestore: {
+    // Restore the stack pointer from the location provided by the intrinsic.
+    unsigned Reg = getOrCreateVReg(*CI.getArgOperand(0));
+    unsigned StackPtr = MF->getSubtarget()
+                            .getTargetLowering()
+                            ->getStackPointerRegisterToSaveRestore();
+
+    // If the target doesn't specify a stack pointer, then fall back.
+    if (!StackPtr)
+      return false;
+
+    MIRBuilder.buildCopy(StackPtr, Reg);
+    return true;
+  }
   case Intrinsic::cttz:
   case Intrinsic::ctlz: {
     ConstantInt *Cst = cast<ConstantInt>(CI.getArgOperand(1));
@@ -1224,8 +1221,9 @@ bool IRTranslator::translateInvoke(const User &U,
   MCSymbol *BeginSymbol = Context.createTempSymbol();
   MIRBuilder.buildInstr(TargetOpcode::EH_LABEL).addSym(BeginSymbol);
 
-  unsigned Res =
-        MRI->createGenericVirtualRegister(getLLTForType(*I.getType(), *DL));
+  unsigned Res = 0;
+  if (!I.getType()->isVoidTy())
+    Res = MRI->createGenericVirtualRegister(getLLTForType(*I.getType(), *DL));
   SmallVector<unsigned, 8> Args;
   for (auto &Arg: I.arg_operands())
     Args.push_back(packRegs(*Arg, MIRBuilder));

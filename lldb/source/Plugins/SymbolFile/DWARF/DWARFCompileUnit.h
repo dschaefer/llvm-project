@@ -12,40 +12,30 @@
 #include "DWARFUnit.h"
 #include "llvm/Support/Error.h"
 
-namespace lldb_private {
-class DWARFContext;
-}
-
 class DWARFCompileUnit : public DWARFUnit {
 public:
   static llvm::Expected<DWARFUnitSP>
   extract(SymbolFileDWARF *dwarf2Data,
-          lldb_private::DWARFContext &dwarf_context,
           const lldb_private::DWARFDataExtractor &debug_info,
           lldb::offset_t *offset_ptr);
   void Dump(lldb_private::Stream *s) const override;
 
-  //------------------------------------------------------------------
   /// Get the data that contains the DIE information for this unit.
   ///
   /// \return
   ///   The correct data (.debug_types for DWARF 4 and earlier, and
   ///   .debug_info for DWARF 5 and later) for the DIE information in
   ///   this unit.
-  //------------------------------------------------------------------
   const lldb_private::DWARFDataExtractor &GetData() const override;
 
-  //------------------------------------------------------------------
   /// Get the size in bytes of the header.
   ///
   /// \return
   ///     Byte size of the compile unit header
-  //------------------------------------------------------------------
   uint32_t GetHeaderByteSize() const override;
 
 private:
-  DWARFCompileUnit(SymbolFileDWARF *dwarf2Data,
-                   lldb_private::DWARFContext &dwarf_context);
+  DWARFCompileUnit(SymbolFileDWARF *dwarf2Data);
   DISALLOW_COPY_AND_ASSIGN(DWARFCompileUnit);
 };
 

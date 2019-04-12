@@ -115,7 +115,7 @@ DWARFFormValue::DWARFFormValue(const DWARFUnit *cu, dw_form_t form)
 void DWARFFormValue::Clear() {
   m_cu = nullptr;
   m_form = 0;
-  memset(&m_value, 0, sizeof(m_value));
+  m_value = ValueTypeTag();
 }
 
 bool DWARFFormValue::ExtractValue(const DWARFDataExtractor &data,
@@ -489,16 +489,16 @@ void DWARFFormValue::Dump(Stream &s) const {
 }
 
 const char *DWARFFormValue::AsCString() const {
-  if (m_form == DW_FORM_string)
-    return m_value.value.cstr;
-
-  DWARFContext &context = m_cu->GetDWARFContext();
   SymbolFileDWARF *symbol_file = m_cu->GetSymbolFileDWARF();
 
-  if (m_form == DW_FORM_strp)
-    return symbol_file->get_debug_str_data().PeekCStr(m_value.value.uval);
+  if (m_form == DW_FORM_string) {
+    return m_value.value.cstr;
+  } else if (m_form == DW_FORM_strp) {
+    if (!symbol_file)
+      return nullptr;
 
-  if (m_form == DW_FORM_GNU_str_index) {
+    return symbol_file->get_debug_str_data().PeekCStr(m_value.value.uval);
+  } else if (m_form == DW_FORM_GNU_str_index) {
     if (!symbol_file)
       return nullptr;
 
@@ -526,13 +526,8 @@ const char *DWARFFormValue::AsCString() const {
     return symbol_file->get_debug_str_data().PeekCStr(strOffset);
   }
 
-  if (m_form == DW_FORM_line_strp) {
-    const DWARFDataExtractor *extractor = context.getOrLoadDebugLineStrData();
-    if (!extractor)
-      return nullptr;
-
-    return extractor->PeekCStr(m_value.value.uval);
-  }
+  if (m_form == DW_FORM_line_strp)
+    return symbol_file->get_debug_line_str_data().PeekCStr(m_value.value.uval);
 
   return nullptr;
 }

@@ -21,10 +21,6 @@ class NameToDIE;
 class SymbolFileDWARF;
 class SymbolFileDWARFDwo;
 
-namespace lldb_private {
-class DWARFContext;
-}
-
 typedef std::shared_ptr<DWARFUnit> DWARFUnitSP;
 
 enum DWARFProducer {
@@ -62,7 +58,6 @@ public:
                            uint32_t depth = UINT32_MAX) const;
   bool Verify(lldb_private::Stream *s) const;
   virtual void Dump(lldb_private::Stream *s) const = 0;
-  //------------------------------------------------------------------
   /// Get the data that contains the DIE information for this unit.
   ///
   /// This will return the correct bytes that contain the data for
@@ -71,26 +66,21 @@ public:
   ///
   /// \return
   ///   The correct data for the DIE information in this unit.
-  //------------------------------------------------------------------
   virtual const lldb_private::DWARFDataExtractor &GetData() const = 0;
-  //------------------------------------------------------------------
   /// Get the size in bytes of the compile unit header.
   ///
   /// \return
   ///     Byte size of the compile unit header
-  //------------------------------------------------------------------
   virtual uint32_t GetHeaderByteSize() const = 0;
   // Offset of the initial length field.
   dw_offset_t GetOffset() const { return m_offset; }
   lldb::user_id_t GetID() const;
-  //------------------------------------------------------------------
   /// Get the size in bytes of the length field in the header.
   ///
   /// In DWARF32 this is just 4 bytes
   ///
   /// \return
   ///     Byte size of the compile unit header length field
-  //------------------------------------------------------------------
   size_t GetLengthByteSize() const { return 4; }
 
   bool ContainsDIEOffset(dw_offset_t die_offset) const {
@@ -151,7 +141,6 @@ public:
   bool Supports_unnamed_objc_bitfields();
 
   SymbolFileDWARF *GetSymbolFileDWARF() const;
-  lldb_private::DWARFContext &GetDWARFContext() const;
 
   DWARFProducer GetProducer();
 
@@ -180,10 +169,9 @@ public:
   }
 
 protected:
-  DWARFUnit(SymbolFileDWARF *dwarf, lldb_private::DWARFContext &dwarf_context);
+  DWARFUnit(SymbolFileDWARF *dwarf);
 
   SymbolFileDWARF *m_dwarf = nullptr;
-  lldb_private::DWARFContext &m_dwarf_context;
   std::unique_ptr<SymbolFileDWARFDwo> m_dwo_symbol_file;
   const DWARFAbbreviationDeclarationSet *m_abbrevs = nullptr;
   void *m_user_data = nullptr;

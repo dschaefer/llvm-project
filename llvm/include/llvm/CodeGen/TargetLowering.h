@@ -534,6 +534,15 @@ public:
     return false;
   }
 
+  /// Return true if it is profitable to fold a pair of shifts into a mask.
+  /// This is usually true on most targets. But some targets, like Thumb1,
+  /// have immediate shift instructions, but no immediate "and" instruction;
+  /// this makes the fold unprofitable.
+  virtual bool shouldFoldShiftPairToMask(const SDNode *N,
+                                         CombineLevel Level) const {
+    return true;
+  }
+
   /// Should we tranform the IR-optimal check for whether given truncation
   /// down into KeptBits would be truncating or not:
   ///   (add %x, (1 << (KeptBits-1))) srccond (1 << KeptBits)
@@ -953,12 +962,10 @@ public:
   /// getEstimatedNumberOfCaseClusters() in BasicTTIImpl.
   virtual bool isSuitableForJumpTable(const SwitchInst *SI, uint64_t NumCases,
                                       uint64_t Range) const {
-    const bool OptForSize = SI->getParent()->getParent()->optForSize();
+    const bool OptForSize = SI->getParent()->getParent()->hasOptSize();
     const unsigned MinDensity = getMinimumJumpTableDensity(OptForSize);
     const unsigned MaxJumpTableSize =
-        OptForSize || getMaximumJumpTableSize() == 0
-            ? UINT_MAX
-            : getMaximumJumpTableSize();
+        OptForSize ? UINT_MAX : getMaximumJumpTableSize();
     // Check whether a range of clusters is dense enough for a jump table.
     if (Range <= MaxJumpTableSize &&
         (NumCases * 100 >= Range * MinDensity)) {
@@ -2443,6 +2450,14 @@ public:
     return false;
   }
 
+  /// Return true if extraction of a scalar element from the given vector type
+  /// at the given index is cheap. For example, if scalar operations occur on
+  /// the same register file as vector operations, then an extract element may
+  /// be a sub-register rename rather than an actual instruction.
+  virtual bool isExtractVecEltCheap(EVT VT, unsigned Index) const {
+    return false;
+  }
+
   /// Try to convert math with an overflow comparison into the corresponding DAG
   /// node operation. Targets may want to override this independently of whether
   /// the operation is legal/custom for the given type because it may obscure
@@ -3129,15 +3144,6 @@ public:
   /// @param Level the current DAGCombine legalization level.
   virtual bool isDesirableToCommuteWithShift(const SDNode *N,
                                              CombineLevel Level) const {
-    return true;
-  }
-
-  /// Return true if it is profitable to fold a pair of shifts into a mask.
-  /// This is usually true on most targets. But some targets, like Thumb1,
-  /// have immediate shift instructions, but no immediate "and" instruction;
-  /// this makes the fold unprofitable.
-  virtual bool shouldFoldShiftPairToMask(const SDNode *N,
-                                         CombineLevel Level) const {
     return true;
   }
 

@@ -65,7 +65,9 @@ private:
   uint32_t lookupType(const WasmSignature &Sig);
   uint32_t registerType(const WasmSignature &Sig);
 
-  void createCtorFunction();
+  void createApplyRelocationsFunction();
+  void createCallCtorsFunction();
+
   void calculateInitFunctions();
   void processRelocations(InputChunk *Chunk);
   void assignIndexes();
@@ -118,6 +120,7 @@ private:
   std::vector<const WasmSignature *> Types;
   DenseMap<WasmSignature, int32_t> TypeIndices;
   std::vector<const Symbol *> ImportedSymbols;
+  std::vector<const Symbol *> GOTSymbols;
   unsigned NumImportedFunctions = 0;
   unsigned NumImportedGlobals = 0;
   unsigned NumImportedEvents = 0;
@@ -147,7 +150,7 @@ private:
 } // anonymous namespace
 
 void Writer::createImportSection() {
-  uint32_t NumImports = ImportedSymbols.size();
+  uint32_t NumImports = ImportedSymbols.size() + GOTSymbols.size();
   if (Config->ImportMemory)
     ++NumImports;
   if (Config->ImportTable)
@@ -168,7 +171,7 @@ void Writer::createImportSection() {
     Import.Kind = WASM_EXTERNAL_MEMORY;
     Import.Memory.Flags = 0;
     Import.Memory.Initial = NumMemoryPages;
-    if (MaxMemoryPages != 0) {
+    if (MaxMemoryPages != 0 || Config->SharedMemory) {
       Import.Memory.Flags |= WASM_LIMITS_FLAG_HAS_MAX;
       Import.Memory.Maximum = MaxMemoryPages;
     }
@@ -204,9 +207,6 @@ void Writer::createImportSection() {
     if (auto *FunctionSym = dyn_cast<FunctionSymbol>(Sym)) {
       Import.Kind = WASM_EXTERNAL_FUNCTION;
       Import.SigIndex = lookupType(*FunctionSym->Signature);
-    } else if (auto *DataSym = dyn_cast<UndefinedData>(Sym)) {
-      Import.Kind = WASM_EXTERNAL_GLOBAL;
-      Import.Global = {WASM_TYPE_I32, true};
     } else if (auto *GlobalSym = dyn_cast<GlobalSymbol>(Sym)) {
       Import.Kind = WASM_EXTERNAL_GLOBAL;
       Import.Global = *GlobalSym->getGlobalType();
@@ -216,6 +216,18 @@ void Writer::createImportSection() {
       Import.Event.Attribute = EventSym->getEventType()->Attribute;
       Import.Event.SigIndex = lookupType(*EventSym->Signature);
     }
+    writeImport(OS, Import);
+  }
+
+  for (const Symbol *Sym : GOTSymbols) {
+    WasmImport Import;
+    Import.Kind = WASM_EXTERNAL_GLOBAL;
+    Import.Global = {WASM_TYPE_I32, true};
+    if (isa<DataSymbol>(Sym))
+      Import.Module = "GOT.mem";
+    else
+      Import.Module = "GOT.func";
+    Import.Field = Sym->getName();
     writeImport(OS, Import);
   }
 }
@@ -247,7 +259,7 @@ void Writer::createMemorySection() {
   SyntheticSection *Section = createSyntheticSection(WASM_SEC_MEMORY);
   raw_ostream &OS = Section->getStream();
 
-  bool HasMax = MaxMemoryPages != 0;
+  bool HasMax = MaxMemoryPages != 0 || Config->SharedMemory;
   writeUleb128(OS, 1, "memory count");
   unsigned Flags = 0;
   if (HasMax)
@@ -677,10 +689,10 @@ void Writer::createProducersSection() {
                             std::make_pair(&Info.SDKs, &SDKs)})
       for (auto &Producer : *Producers.first)
         if (Producers.second->end() ==
-            std::find_if(Producers.second->begin(), Producers.second->end(),
-                         [&](std::pair<std::string, std::string> Seen) {
-                           return Seen.first == Producer.first;
-                         }))
+            llvm::find_if(*Producers.second,
+                          [&](std::pair<std::string, std::string> Seen) {
+                            return Seen.first == Producer.first;
+                          }))
           Producers.second->push_back(Producer);
   }
   int FieldCount =
@@ -821,7 +833,8 @@ void Writer::layoutMemory() {
   NumMemoryPages = alignTo(MemoryPtr, WasmPageSize) / WasmPageSize;
   log("mem: total pages = " + Twine(NumMemoryPages));
 
-  if (Config->MaxMemory != 0) {
+  // Check max if explicitly supplied or required by shared memory
+  if (Config->MaxMemory != 0 || Config->SharedMemory) {
     if (Config->MaxMemory != alignTo(Config->MaxMemory, WasmPageSize))
       error("maximum memory must be " + Twine(WasmPageSize) + "-byte aligned");
     if (MemoryPtr > Config->MaxMemory)
@@ -878,18 +891,30 @@ void Writer::createSections() {
 }
 
 void Writer::calculateTargetFeatures() {
+  SmallSet<std::string, 8> Used;
   SmallSet<std::string, 8> Required;
   SmallSet<std::string, 8> Disallowed;
+
+  // Only infer used features if user did not specify features
+  bool InferFeatures = !Config->Features.hasValue();
+
+  if (!InferFeatures) {
+    for (auto &Feature : Config->Features.getValue())
+      TargetFeatures.insert(Feature);
+    // No need to read or check features
+    if (!Config->CheckFeatures)
+      return;
+  }
 
   // Find the sets of used, required, and disallowed features
   for (ObjFile *File : Symtab->ObjectFiles) {
     for (auto &Feature : File->getWasmObj()->getTargetFeatures()) {
       switch (Feature.Prefix) {
       case WASM_FEATURE_PREFIX_USED:
-        TargetFeatures.insert(Feature.Name);
+        Used.insert(Feature.Name);
         break;
       case WASM_FEATURE_PREFIX_REQUIRED:
-        TargetFeatures.insert(Feature.Name);
+        Used.insert(Feature.Name);
         Required.insert(Feature.Name);
         break;
       case WASM_FEATURE_PREFIX_DISALLOWED:
@@ -902,6 +927,27 @@ void Writer::calculateTargetFeatures() {
     }
   }
 
+  if (InferFeatures)
+    TargetFeatures.insert(Used.begin(), Used.end());
+
+  if (TargetFeatures.count("atomics") && !Config->SharedMemory)
+    error("'atomics' feature is used, so --shared-memory must be used");
+
+  if (!Config->CheckFeatures)
+    return;
+
+  if (Disallowed.count("atomics") && Config->SharedMemory)
+    error(
+        "'atomics' feature is disallowed, so --shared-memory must not be used");
+
+  // Validate that used features are allowed in output
+  if (!InferFeatures) {
+    for (auto &Feature : Used) {
+      if (!TargetFeatures.count(Feature))
+        error(Twine("Target feature '") + Feature + "' is not allowed.");
+    }
+  }
+
   // Validate the required and disallowed constraints for each file
   for (ObjFile *File : Symtab->ObjectFiles) {
     SmallSet<std::string, 8> ObjectFeatures;
@@ -910,11 +956,13 @@ void Writer::calculateTargetFeatures() {
         continue;
       ObjectFeatures.insert(Feature.Name);
       if (Disallowed.count(Feature.Name))
-        error("Target feature \"" + Feature.Name + "\" is disallowed");
+        error(Twine("Target feature '") + Feature.Name +
+              "' is disallowed. Use --no-check-features to suppress.");
     }
     for (auto &Feature : Required) {
       if (!ObjectFeatures.count(Feature))
-        error(Twine("Missing required target feature \"") + Feature + "\"");
+        error(Twine("Missing required target feature '") + Feature +
+              "'. Use --no-check-features to suppress.");
     }
   }
 }
@@ -929,9 +977,9 @@ void Writer::calculateImports() {
       continue;
     if (!Sym->IsUsedInRegularObj)
       continue;
-    // In relocatable output we don't generate imports for data symbols.
-    // These live only in the symbol table.
-    if (Config->Relocatable && isa<DataSymbol>(Sym))
+    // We don't generate imports for data symbols. They however can be imported
+    // as GOT entries.
+    if (isa<DataSymbol>(Sym))
       continue;
 
     LLVM_DEBUG(dbgs() << "import: " << Sym->getName() << "\n");
@@ -940,8 +988,6 @@ void Writer::calculateImports() {
       F->setFunctionIndex(NumImportedFunctions++);
     else if (auto *G = dyn_cast<GlobalSymbol>(Sym))
       G->setGlobalIndex(NumImportedGlobals++);
-    else if (auto *D = dyn_cast<UndefinedData>(Sym))
-      D->setGlobalIndex(NumImportedGlobals++);
     else
       cast<EventSymbol>(Sym)->setEventIndex(NumImportedEvents++);
   }
@@ -1092,7 +1138,8 @@ void Writer::processRelocations(InputChunk *Chunk) {
   for (const WasmRelocation &Reloc : Chunk->getRelocations()) {
     switch (Reloc.Type) {
     case R_WASM_TABLE_INDEX_I32:
-    case R_WASM_TABLE_INDEX_SLEB: {
+    case R_WASM_TABLE_INDEX_SLEB:
+    case R_WASM_TABLE_INDEX_REL_SLEB: {
       FunctionSymbol *Sym = File->getFunctionSymbol(Reloc.Index);
       if (Sym->hasTableIndex() || !Sym->hasFunctionIndex())
         continue;
@@ -1105,18 +1152,41 @@ void Writer::processRelocations(InputChunk *Chunk) {
       File->TypeMap[Reloc.Index] = registerType(Types[Reloc.Index]);
       File->TypeIsUsed[Reloc.Index] = true;
       break;
-    case R_WASM_MEMORY_ADDR_SLEB:
-    case R_WASM_MEMORY_ADDR_I32:
-    case R_WASM_MEMORY_ADDR_LEB: {
-      DataSymbol *DataSym = File->getDataSymbol(Reloc.Index);
-      if (!Config->Relocatable && !isa<DefinedData>(DataSym) &&
-          !DataSym->isWeak())
-        error(File->getName() +
-              ": relocation of type R_WASM_MEMORY_ADDR_* "
-              "against undefined data symbol: " +
-              DataSym->getName());
-      break;
+    case R_WASM_GLOBAL_INDEX_LEB: {
+      auto* Sym = File->getSymbols()[Reloc.Index];
+      if (!isa<GlobalSymbol>(Sym) && !Sym->isInGOT()) {
+        Sym->setGOTIndex(NumImportedGlobals++);
+        GOTSymbols.push_back(Sym);
+      }
     }
+    }
+
+    if (Config->Pic) {
+      switch (Reloc.Type) {
+      case R_WASM_TABLE_INDEX_SLEB:
+      case R_WASM_MEMORY_ADDR_SLEB:
+      case R_WASM_MEMORY_ADDR_LEB: {
+        // Certain relocation types can't be used when building PIC output, since
+        // they would require absolute symbol addresses at link time.
+        Symbol *Sym = File->getSymbols()[Reloc.Index];
+        error(toString(File) + ": relocation " +
+              relocTypeToString(Reloc.Type) + " cannot be used againt symbol " +
+              toString(*Sym) + "; recompile with -fPIC");
+        break;
+      }
+      case R_WASM_TABLE_INDEX_I32:
+      case R_WASM_MEMORY_ADDR_I32: {
+        // These relocation types are only present in the data section and
+        // will be converted into code by `generateRelocationCode`.  This code
+        // requires the symbols to have GOT entires.
+        auto* Sym = File->getSymbols()[Reloc.Index];
+        if (!Sym->isHidden() && !Sym->isLocal() && !Sym->isInGOT()) {
+          Sym->setGOTIndex(NumImportedGlobals++);
+          GOTSymbols.push_back(Sym);
+        }
+        break;
+      }
+      }
     }
   }
 }
@@ -1222,12 +1292,38 @@ void Writer::createOutputSegments() {
   }
 }
 
-static const int OPCODE_CALL = 0x10;
-static const int OPCODE_END = 0xb;
+// For -shared (PIC) output, we create create a synthetic function which will
+// apply any relocations to the data segments on startup.  This function is
+// called __wasm_apply_relocs and is added at the very beginning of
+// __wasm_call_ctors before any of the constructors run.
+void Writer::createApplyRelocationsFunction() {
+  LLVM_DEBUG(dbgs() << "createApplyRelocationsFunction\n");
+  // First write the body's contents to a string.
+  std::string BodyContent;
+  {
+    raw_string_ostream OS(BodyContent);
+    writeUleb128(OS, 0, "num locals");
+    for (const OutputSegment *Seg : Segments)
+      for (const InputSegment *InSeg : Seg->InputSegments)
+        InSeg->generateRelocationCode(OS);
+    writeU8(OS, WASM_OPCODE_END, "END");
+  }
+
+  // Once we know the size of the body we can create the final function body
+  std::string FunctionBody;
+  {
+    raw_string_ostream OS(FunctionBody);
+    writeUleb128(OS, BodyContent.size(), "function size");
+    OS << BodyContent;
+  }
+
+  ArrayRef<uint8_t> Body = arrayRefFromStringRef(Saver.save(FunctionBody));
+  cast<SyntheticFunction>(WasmSym::ApplyRelocs->Function)->setBody(Body);
+}
 
 // Create synthetic "__wasm_call_ctors" function based on ctor functions
 // in input object.
-void Writer::createCtorFunction() {
+void Writer::createCallCtorsFunction() {
   if (!WasmSym::CallCtors->isLive())
     return;
 
@@ -1236,11 +1332,16 @@ void Writer::createCtorFunction() {
   {
     raw_string_ostream OS(BodyContent);
     writeUleb128(OS, 0, "num locals");
+    if (Config->Pic) {
+      writeU8(OS, WASM_OPCODE_CALL, "CALL");
+      writeUleb128(OS, WasmSym::ApplyRelocs->getFunctionIndex(),
+                   "function index");
+    }
     for (const WasmInitEntry &F : InitFunctions) {
-      writeU8(OS, OPCODE_CALL, "CALL");
+      writeU8(OS, WASM_OPCODE_CALL, "CALL");
       writeUleb128(OS, F.Sym->getFunctionIndex(), "function index");
     }
-    writeU8(OS, OPCODE_END, "END");
+    writeU8(OS, WASM_OPCODE_END, "END");
   }
 
   // Once we know the size of the body we can create the final function body
@@ -1298,12 +1399,15 @@ void Writer::run() {
   assignIndexes();
   log("-- calculateInitFunctions");
   calculateInitFunctions();
-  if (!Config->Relocatable)
-    createCtorFunction();
   log("-- calculateTypes");
   calculateTypes();
   log("-- layoutMemory");
   layoutMemory();
+  if (!Config->Relocatable) {
+    if (Config->Pic)
+      createApplyRelocationsFunction();
+    createCallCtorsFunction();
+  }
   log("-- calculateExports");
   calculateExports();
   log("-- calculateCustomSections");

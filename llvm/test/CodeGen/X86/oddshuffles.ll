@@ -1241,7 +1241,7 @@ define void @interleave_24i16_in(<24 x i16>* %p, <8 x i16>* %q1, <8 x i16>* %q2,
 ; XOP-NEXT:    vmovdqu (%rsi), %xmm0
 ; XOP-NEXT:    vmovdqu (%rdx), %xmm1
 ; XOP-NEXT:    vmovdqu (%rcx), %xmm2
-; XOP-NEXT:    vpperm {{.*#+}} xmm3 = xmm0[4,5,6,7],xmm1[6,7],xmm0[6,7,8,9],xmm1[8,9],xmm0[8,9,10,11]
+; XOP-NEXT:    vpperm {{.*#+}} xmm3 = xmm0[u,u,6,7],xmm1[6,7],xmm0[u,u,8,9],xmm1[8,9],xmm0[u,u,10,11]
 ; XOP-NEXT:    vpshufd {{.*#+}} xmm4 = xmm2[1,1,2,2]
 ; XOP-NEXT:    vpblendw {{.*#+}} xmm3 = xmm4[0],xmm3[1,2],xmm4[3],xmm3[4,5],xmm4[6],xmm3[7]
 ; XOP-NEXT:    vpunpcklwd {{.*#+}} xmm4 = xmm0[0],xmm1[0],xmm0[1],xmm1[1],xmm0[2],xmm1[2],xmm0[3],xmm1[3]
@@ -1771,19 +1771,11 @@ define <2 x double> @wrongorder(<4 x double> %A, <8 x double>* %P) #0 {
 define void @PR41097() {
 ; SSE2-LABEL: PR41097:
 ; SSE2:       # %bb.0:
-; SSE2-NEXT:    movss {{.*#+}} xmm0 = mem[0],zero,zero,zero
-; SSE2-NEXT:    movzwl (%rax), %eax
-; SSE2-NEXT:    movd %eax, %xmm1
-; SSE2-NEXT:    shufps {{.*#+}} xmm1 = xmm1[0,0],xmm0[2,0]
-; SSE2-NEXT:    pshuflw {{.*#+}} xmm0 = xmm0[0,1,1,3,4,5,6,7]
-; SSE2-NEXT:    shufps {{.*#+}} xmm0 = xmm0[0,1],xmm1[0,2]
-; SSE2-NEXT:    pshuflw {{.*#+}} xmm0 = xmm0[0,2,2,3,4,5,6,7]
-; SSE2-NEXT:    pshufhw {{.*#+}} xmm0 = xmm0[0,1,2,3,4,6,6,7]
-; SSE2-NEXT:    pshufd {{.*#+}} xmm0 = xmm0[0,2,2,3]
+; SSE2-NEXT:    movd {{.*#+}} xmm0 = mem[0],zero,zero,zero
 ; SSE2-NEXT:    punpcklbw {{.*#+}} xmm0 = xmm0[0,0,1,1,2,2,3,3,4,4,5,5,6,6,7,7]
 ; SSE2-NEXT:    pshuflw {{.*#+}} xmm0 = xmm0[0,0,2,3,4,5,6,7]
 ; SSE2-NEXT:    psrad $24, %xmm0
-; SSE2-NEXT:    xorps %xmm1, %xmm1
+; SSE2-NEXT:    pxor %xmm1, %xmm1
 ; SSE2-NEXT:    punpckldq {{.*#+}} xmm0 = xmm0[0],xmm1[0],xmm0[1],xmm1[1]
 ; SSE2-NEXT:    movdqu %xmm0, (%rax)
 ; SSE2-NEXT:    retq

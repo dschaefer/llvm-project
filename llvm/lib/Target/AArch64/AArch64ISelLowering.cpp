@@ -613,9 +613,9 @@ AArch64TargetLowering::AArch64TargetLowering(const TargetMachine &TM,
   setPrefLoopAlignment(STI.getPrefLoopAlignment());
 
   // Only change the limit for entries in a jump table if specified by
-  // the subtarget, but not at the command line.
+  // the sub target, but not at the command line.
   unsigned MaxJT = STI.getMaximumJumpTableSize();
-  if (MaxJT && getMaximumJumpTableSize() == 0)
+  if (MaxJT && getMaximumJumpTableSize() == UINT_MAX)
     setMaximumJumpTableSize(MaxJT);
 
   setHasExtractBitsInsn(true);
@@ -10382,7 +10382,7 @@ static SDValue splitStores(SDNode *N, TargetLowering::DAGCombinerInfo &DCI,
     return SDValue();
 
   // Don't split at -Oz.
-  if (DAG.getMachineFunction().getFunction().optForMinSize())
+  if (DAG.getMachineFunction().getFunction().hasMinSize())
     return SDValue();
 
   // Don't split v2i64 vectors. Memcpy lowering produces those and splitting
@@ -11035,6 +11035,12 @@ static SDValue getTestBitOperand(SDValue Op, unsigned &Bit, bool &Invert,
   // This case is just here to enable more of the below cases to be caught.
   if (Op->getOpcode() == ISD::TRUNCATE &&
       Bit < Op->getValueType(0).getSizeInBits()) {
+    return getTestBitOperand(Op->getOperand(0), Bit, Invert, DAG);
+  }
+
+  // (tbz (any_ext x), b) -> (tbz x, b) if we don't use the extended bits.
+  if (Op->getOpcode() == ISD::ANY_EXTEND &&
+      Bit < Op->getOperand(0).getValueSizeInBits()) {
     return getTestBitOperand(Op->getOperand(0), Bit, Invert, DAG);
   }
 

@@ -40,7 +40,7 @@ namespace llvm {
     // the enum. The order of elements in this enum matters!
     // Values that are added after this entry:
     //     STBRX = ISD::FIRST_TARGET_MEMORY_OPCODE
-    // are considerd memory opcodes and are treated differently than entries
+    // are considered memory opcodes and are treated differently than entries
     // that come before it. For example, ADD or MUL should be placed before
     // the ISD::FIRST_TARGET_MEMORY_OPCODE while a LOAD or STORE should come
     // after it.
@@ -192,7 +192,7 @@ namespace llvm {
       /// Direct move from a GPR to a VSX register (zero)
       MTVSRZ,
 
-      /// Direct move of 2 consective GPR to a VSX register.
+      /// Direct move of 2 consecutive GPR to a VSX register.
       BUILD_FP128,
 
       /// Extract a subvector from signed integer vector and convert to FP.
@@ -1121,6 +1121,7 @@ namespace llvm {
     SDValue combineSHL(SDNode *N, DAGCombinerInfo &DCI) const;
     SDValue combineSRA(SDNode *N, DAGCombinerInfo &DCI) const;
     SDValue combineSRL(SDNode *N, DAGCombinerInfo &DCI) const;
+    SDValue combineMUL(SDNode *N, DAGCombinerInfo &DCI) const;
     SDValue combineADD(SDNode *N, DAGCombinerInfo &DCI) const;
     SDValue combineTRUNCATE(SDNode *N, DAGCombinerInfo &DCI) const;
     SDValue combineSetCC(SDNode *N, DAGCombinerInfo &DCI) const;

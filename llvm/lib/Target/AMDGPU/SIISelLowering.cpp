@@ -4145,7 +4145,9 @@ SDValue SITargetLowering::lowerFP_ROUND(SDValue Op, SelectionDAG &DAG) const {
 SDValue SITargetLowering::lowerFMINNUM_FMAXNUM(SDValue Op,
                                                SelectionDAG &DAG) const {
   EVT VT = Op.getValueType();
-  bool IsIEEEMode = Subtarget->enableIEEEBit(DAG.getMachineFunction());
+  const MachineFunction &MF = DAG.getMachineFunction();
+  const SIMachineFunctionInfo *Info = MF.getInfo<SIMachineFunctionInfo>();
+  bool IsIEEEMode = Info->getMode().IEEE;
 
   // FIXME: Assert during eslection that this is only selected for
   // ieee_mode. Currently a combine can produce the ieee version for non-ieee
@@ -4701,14 +4703,14 @@ static SDValue constructRetValue(SelectionDAG &DAG,
   EVT CastVT = NumElts > 1 ? EVT::getVectorVT(Context, AdjEltVT, NumElts)
                            : AdjEltVT;
 
-  // Special case for v8f16. Rather than add support for this, use v4i32 to
+  // Special case for v6f16. Rather than add support for this, use v3i32 to
   // extract the data elements
-  bool V8F16Special = false;
-  if (CastVT == MVT::v8f16) {
-    CastVT = MVT::v4i32;
+  bool V6F16Special = false;
+  if (NumElts == 6) {
+    CastVT = EVT::getVectorVT(Context, MVT::i32, NumElts / 2);
     DMaskPop >>= 1;
     ReqRetNumElts >>= 1;
-    V8F16Special = true;
+    V6F16Special = true;
     AdjVT = MVT::v2i32;
   }
 
@@ -4738,7 +4740,7 @@ static SDValue constructRetValue(SelectionDAG &DAG,
     PreTFCRes = BVElts[0];
   }
 
-  if (V8F16Special)
+  if (V6F16Special)
     PreTFCRes = DAG.getNode(ISD::BITCAST, DL, MVT::v4f16, PreTFCRes);
 
   if (!IsTexFail) {
@@ -4970,9 +4972,6 @@ SDValue SITargetLowering::lowerImage(SDValue Op,
         return DAG.getMergeValues({Undef, Op.getOperand(0)}, DL);
       return Undef;
     }
-
-    // Have to use a power of 2 number of dwords
-    NumVDataDwords = 1 << Log2_32_Ceil(NumVDataDwords);
 
     EVT NewVT = NumVDataDwords > 1 ?
                   EVT::getVectorVT(*DAG.getContext(), MVT::f32, NumVDataDwords)
@@ -8303,9 +8302,12 @@ SDValue SITargetLowering::performFPMed3ImmCombine(SelectionDAG &DAG,
   if (Cmp == APFloat::cmpGreaterThan)
     return SDValue();
 
+  const MachineFunction &MF = DAG.getMachineFunction();
+  const SIMachineFunctionInfo *Info = MF.getInfo<SIMachineFunctionInfo>();
+
   // TODO: Check IEEE bit enabled?
   EVT VT = Op0.getValueType();
-  if (Subtarget->enableDX10Clamp()) {
+  if (Info->getMode().DX10Clamp) {
     // If dx10_clamp is enabled, NaNs clamp to 0.0. This is the same as the
     // hardware fmed3 behavior converting to a min.
     // FIXME: Should this be allowing -0.0?
@@ -8439,9 +8441,12 @@ SDValue SITargetLowering::performFMed3Combine(SDNode *N,
     return DAG.getNode(AMDGPUISD::CLAMP, SL, VT, Src2);
   }
 
+  const MachineFunction &MF = DAG.getMachineFunction();
+  const SIMachineFunctionInfo *Info = MF.getInfo<SIMachineFunctionInfo>();
+
   // FIXME: dx10_clamp behavior assumed in instcombine. Should we really bother
   // handling no dx10-clamp?
-  if (Subtarget->enableDX10Clamp()) {
+  if (Info->getMode().DX10Clamp) {
     // If NaNs is clamped to 0, we are free to reorder the inputs.
 
     if (isa<ConstantFPSDNode>(Src0) && !isa<ConstantFPSDNode>(Src1))
@@ -9131,11 +9136,13 @@ SDValue SITargetLowering::performClampCombine(SDNode *N,
   if (!CSrc)
     return SDValue();
 
+  const MachineFunction &MF = DCI.DAG.getMachineFunction();
   const APFloat &F = CSrc->getValueAPF();
   APFloat Zero = APFloat::getZero(F.getSemantics());
   APFloat::cmpResult Cmp0 = F.compare(Zero);
   if (Cmp0 == APFloat::cmpLessThan ||
-      (Cmp0 == APFloat::cmpUnordered && Subtarget->enableDX10Clamp())) {
+      (Cmp0 == APFloat::cmpUnordered &&
+       MF.getInfo<SIMachineFunctionInfo>()->getMode().DX10Clamp)) {
     return DCI.DAG.getConstantFP(Zero, SDLoc(N), N->getValueType(0));
   }
 
@@ -9970,7 +9977,10 @@ bool SITargetLowering::isKnownNeverNaNForTargetNode(SDValue Op,
                                                     bool SNaN,
                                                     unsigned Depth) const {
   if (Op.getOpcode() == AMDGPUISD::CLAMP) {
-    if (Subtarget->enableDX10Clamp())
+    const MachineFunction &MF = DAG.getMachineFunction();
+    const SIMachineFunctionInfo *Info = MF.getInfo<SIMachineFunctionInfo>();
+
+    if (Info->getMode().DX10Clamp)
       return true; // Clamped to 0.
     return DAG.isKnownNeverNaN(Op.getOperand(0), SNaN, Depth + 1);
   }

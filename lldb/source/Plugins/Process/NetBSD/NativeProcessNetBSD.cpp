@@ -54,9 +54,7 @@ static Status EnsureFDFlags(int fd, int flags) {
   return error;
 }
 
-// -----------------------------------------------------------------------------
 // Public Static Methods
-// -----------------------------------------------------------------------------
 
 llvm::Expected<std::unique_ptr<NativeProcessProtocol>>
 NativeProcessNetBSD::Factory::Launch(ProcessLaunchInfo &launch_info,
@@ -136,9 +134,7 @@ NativeProcessNetBSD::Factory::Attach(
   return std::move(process_up);
 }
 
-// -----------------------------------------------------------------------------
 // Public Instance Methods
-// -----------------------------------------------------------------------------
 
 NativeProcessNetBSD::NativeProcessNetBSD(::pid_t pid, int terminal_fd,
                                          NativeDelegate &delegate,
@@ -666,7 +662,7 @@ Status NativeProcessNetBSD::Attach() {
   // Need to use WALLSIG otherwise we receive an error with errno=ECHLD At this
   // point we should have a thread stopped if waitpid succeeds.
   if ((wstatus = llvm::sys::RetryAfterSignal(-1, waitpid,
-          m_pid, NULL, WALLSIG)) < 0)
+          m_pid, nullptr, WALLSIG)) < 0)
     return Status(errno, eErrorTypePOSIX);
 
   /* Initialize threads */

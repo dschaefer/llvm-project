@@ -13,6 +13,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "TokenAnnotator.h"
+#include "FormatToken.h"
 #include "clang/Basic/SourceManager.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/Support/Debug.h"
@@ -440,10 +441,11 @@ private:
         Contexts.back().InCSharpAttributeSpecifier;
 
     bool InsideInlineASM = Line.startsWith(tok::kw_asm);
+    bool IsCppStructuredBinding = Left->isCppStructuredBinding(Style);
     bool StartsObjCMethodExpr =
-        !InsideInlineASM && !CppArrayTemplates && Style.isCpp() &&
-        !IsCpp11AttributeSpecifier && Contexts.back().CanBeExpression &&
-        Left->isNot(TT_LambdaLSquare) &&
+        !IsCppStructuredBinding && !InsideInlineASM && !CppArrayTemplates &&
+        Style.isCpp() && !IsCpp11AttributeSpecifier &&
+        Contexts.back().CanBeExpression && Left->isNot(TT_LambdaLSquare) &&
         !CurrentToken->isOneOf(tok::l_brace, tok::r_square) &&
         (!Parent ||
          Parent->isOneOf(tok::colon, tok::l_square, tok::l_paren,
@@ -451,14 +453,12 @@ private:
          Parent->isUnaryOperator() ||
          // FIXME(bug 36976): ObjC return types shouldn't use TT_CastRParen.
          Parent->isOneOf(TT_ObjCForIn, TT_CastRParen) ||
-         // for (auto && [A,B] : C)  && structure binding seen as ObjCMethodExpr
-         (Parent->isNot(tok::ampamp) &&
-          getBinOpPrecedence(Parent->Tok.getKind(), true, true) >
-              prec::Unknown));
+         (getBinOpPrecedence(Parent->Tok.getKind(), true, true) >
+          prec::Unknown));
     bool ColonFound = false;
 
     unsigned BindingIncrease = 1;
-    if (Left->isCppStructuredBinding(Style)) {
+    if (IsCppStructuredBinding) {
       Left->Type = TT_StructuredBindingLSquare;
     } else if (Left->is(TT_Unknown)) {
       if (StartsObjCMethodExpr) {
@@ -1124,8 +1124,11 @@ public:
     if (Style.Language == FormatStyle::LK_Proto && Line.Level == 0 &&
         CurrentToken->is(Keywords.kw_option)) {
       next();
-      if (CurrentToken && CurrentToken->is(tok::identifier))
+      if (CurrentToken && CurrentToken->is(tok::identifier)) {
+        while (CurrentToken)
+          next();
         return LT_ImportStatement;
+      }
     }
 
     bool KeywordVirtualFound = false;
@@ -1191,11 +1194,11 @@ private:
 
     // Reset token type in case we have already looked at it and then
     // recovered from an error (e.g. failure to find the matching >).
-    if (!CurrentToken->isOneOf(TT_LambdaLSquare, TT_ForEachMacro,
-                               TT_FunctionLBrace, TT_ImplicitStringLiteral,
-                               TT_InlineASMBrace, TT_JsFatArrow, TT_LambdaArrow,
-                               TT_OverloadedOperator, TT_RegexLiteral,
-                               TT_TemplateString, TT_ObjCStringLiteral))
+    if (!CurrentToken->isOneOf(
+            TT_LambdaLSquare, TT_LambdaLBrace, TT_ForEachMacro,
+            TT_FunctionLBrace, TT_ImplicitStringLiteral, TT_InlineASMBrace,
+            TT_JsFatArrow, TT_LambdaArrow, TT_OverloadedOperator,
+            TT_RegexLiteral, TT_TemplateString, TT_ObjCStringLiteral))
       CurrentToken->Type = TT_Unknown;
     CurrentToken->Role.reset();
     CurrentToken->MatchingParen = nullptr;
@@ -2095,7 +2098,7 @@ static bool isFunctionDeclarationName(const FormatToken &Current,
     return true;
   for (const FormatToken *Tok = Next->Next; Tok && Tok != Next->MatchingParen;
        Tok = Tok->Next) {
-    if (Tok->is(tok::l_paren) && Tok->MatchingParen) {
+    if (Tok->isOneOf(tok::l_paren, TT_TemplateOpener) && Tok->MatchingParen) {
       Tok = Tok->MatchingParen;
       continue;
     }
@@ -2453,6 +2456,12 @@ unsigned TokenAnnotator::splitPenalty(const AnnotatedLine &Line,
   return 3;
 }
 
+bool TokenAnnotator::spaceRequiredBeforeParens(const FormatToken &Right) const {
+  return Style.SpaceBeforeParens == FormatStyle::SBPO_Always ||
+         (Style.SpaceBeforeParens == FormatStyle::SBPO_NonEmptyParentheses &&
+          Right.ParameterCount > 0);
+}
+
 bool TokenAnnotator::spaceRequiredBetween(const AnnotatedLine &Line,
                                           const FormatToken &Left,
                                           const FormatToken &Right) {
@@ -2599,9 +2608,9 @@ bool TokenAnnotator::spaceRequiredBetween(const AnnotatedLine &Line,
              (Left.isOneOf(tok::kw_try, Keywords.kw___except, tok::kw_catch,
                            tok::kw_new, tok::kw_delete) &&
               (!Left.Previous || Left.Previous->isNot(tok::period))))) ||
-           (Style.SpaceBeforeParens == FormatStyle::SBPO_Always &&
+           (spaceRequiredBeforeParens(Right) &&
             (Left.is(tok::identifier) || Left.isFunctionLikeKeyword() ||
-             Left.is(tok::r_paren) ||
+             Left.is(tok::r_paren) || Left.isSimpleTypeSpecifier() ||
              (Left.is(tok::r_square) && Left.MatchingParen &&
               Left.MatchingParen->is(TT_LambdaLSquare))) &&
             Line.Type != LT_PreprocessorDirective);
@@ -2795,7 +2804,7 @@ bool TokenAnnotator::spaceRequiredBefore(const AnnotatedLine &Line,
       Left.isOneOf(TT_TrailingReturnArrow, TT_LambdaArrow))
     return true;
   if (Right.is(TT_OverloadedOperatorLParen))
-    return Style.SpaceBeforeParens == FormatStyle::SBPO_Always;
+    return spaceRequiredBeforeParens(Right);
   if (Left.is(tok::comma))
     return true;
   if (Right.is(tok::comma))
@@ -2826,7 +2835,8 @@ bool TokenAnnotator::spaceRequiredBefore(const AnnotatedLine &Line,
     return true;
   }
   if (Left.is(TT_UnaryOperator))
-    return Right.is(TT_BinaryOperator);
+    return (Style.SpaceAfterLogicalNot && Left.is(tok::exclaim)) ||
+           Right.is(TT_BinaryOperator);
 
   // If the next token is a binary operator or a selector name, we have
   // incorrectly classified the parenthesis as a cast. FIXME: Detect correctly.
@@ -2879,7 +2889,7 @@ bool TokenAnnotator::spaceRequiredBefore(const AnnotatedLine &Line,
     return true;
   if (Left.is(TT_TemplateCloser) && Right.is(tok::l_paren) &&
       Right.isNot(TT_FunctionTypeLParen))
-    return Style.SpaceBeforeParens == FormatStyle::SBPO_Always;
+    return spaceRequiredBeforeParens(Right);
   if (Right.is(TT_TemplateOpener) && Left.is(tok::r_paren) &&
       Left.MatchingParen && Left.MatchingParen->is(TT_OverloadedOperatorLParen))
     return false;
@@ -2896,7 +2906,7 @@ bool TokenAnnotator::spaceRequiredBefore(const AnnotatedLine &Line,
 // Returns 'true' if 'Tok' is a brace we'd want to break before in Allman style.
 static bool isAllmanBrace(const FormatToken &Tok) {
   return Tok.is(tok::l_brace) && Tok.BlockKind == BK_Block &&
-         !Tok.isOneOf(TT_ObjCBlockLBrace, TT_DictLiteral);
+         !Tok.isOneOf(TT_ObjCBlockLBrace, TT_LambdaLBrace, TT_DictLiteral);
 }
 
 bool TokenAnnotator::mustBreakBefore(const AnnotatedLine &Line,
@@ -3023,6 +3033,19 @@ bool TokenAnnotator::mustBreakBefore(const AnnotatedLine &Line,
            (Line.startsWith(tok::kw_struct) && Style.BraceWrapping.AfterStruct);
   if (Left.is(TT_ObjCBlockLBrace) && !Style.AllowShortBlocksOnASingleLine)
     return true;
+
+  if (Left.is(TT_LambdaLBrace)) {
+    if (Left.MatchingParen && Left.MatchingParen->Next &&
+        Left.MatchingParen->Next->isOneOf(tok::comma, tok::r_paren) &&
+        Style.AllowShortLambdasOnASingleLine == FormatStyle::SLS_Inline)
+      return false;
+
+    if (Style.AllowShortLambdasOnASingleLine == FormatStyle::SLS_None ||
+        Style.AllowShortLambdasOnASingleLine == FormatStyle::SLS_Inline ||
+        (!Left.Children.empty() &&
+         Style.AllowShortLambdasOnASingleLine == FormatStyle::SLS_Empty))
+      return true;
+  }
 
   // Put multiple C# attributes on a new line.
   if (Style.isCSharp() &&

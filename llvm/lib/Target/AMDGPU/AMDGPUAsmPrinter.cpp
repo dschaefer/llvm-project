@@ -892,10 +892,11 @@ void AMDGPUAsmPrinter::getSIProgramInfo(SIProgramInfo &ProgInfo,
   // register.
   ProgInfo.FloatMode = getFPMode(MF);
 
-  ProgInfo.IEEEMode = STM.enableIEEEBit(MF);
+  const SIModeRegisterDefaults Mode = MFI->getMode();
+  ProgInfo.IEEEMode = Mode.IEEE;
 
   // Make clamp modifier on NaN input returns 0.
-  ProgInfo.DX10Clamp = STM.enableDX10Clamp();
+  ProgInfo.DX10Clamp = Mode.DX10Clamp;
 
   unsigned LDSAlignShift;
   if (STM.getGeneration() < AMDGPUSubtarget::SEA_ISLANDS) {
@@ -1121,10 +1122,9 @@ void AMDGPUAsmPrinter::getAmdKernelCode(amd_kernel_code_t &Out,
 }
 
 bool AMDGPUAsmPrinter::PrintAsmOperand(const MachineInstr *MI, unsigned OpNo,
-                                       unsigned AsmVariant,
                                        const char *ExtraCode, raw_ostream &O) {
   // First try the generic code, which knows about modifiers like 'c' and 'n'.
-  if (!AsmPrinter::PrintAsmOperand(MI, OpNo, AsmVariant, ExtraCode, O))
+  if (!AsmPrinter::PrintAsmOperand(MI, OpNo, ExtraCode, O))
     return false;
 
   if (ExtraCode && ExtraCode[0]) {

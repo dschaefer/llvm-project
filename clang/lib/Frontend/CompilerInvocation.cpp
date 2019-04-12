@@ -1413,9 +1413,9 @@ static bool checkVerifyPrefixes(const std::vector<std::string> &VerifyPrefixes,
   for (const auto &Prefix : VerifyPrefixes) {
     // Every prefix must start with a letter and contain only alphanumeric
     // characters, hyphens, and underscores.
-    auto BadChar = std::find_if(Prefix.begin(), Prefix.end(),
-                                [](char C){return !isAlphanumeric(C)
-                                                  && C != '-' && C != '_';});
+    auto BadChar = llvm::find_if(Prefix, [](char C) {
+      return !isAlphanumeric(C) && C != '-' && C != '_';
+    });
     if (BadChar != Prefix.end() || !isLetter(Prefix[0])) {
       Success = false;
       if (Diags) {
@@ -1717,6 +1717,7 @@ static InputKind ParseFrontendArgs(FrontendOptions &Opts, ArgList &Args,
   Opts.ShowHelp = Args.hasArg(OPT_help);
   Opts.ShowStats = Args.hasArg(OPT_print_stats);
   Opts.ShowTimers = Args.hasArg(OPT_ftime_report);
+  Opts.TimeTrace = Args.hasArg(OPT_ftime_trace);
   Opts.ShowVersion = Args.hasArg(OPT_version);
   Opts.ASTMergeFiles = Args.getAllArgValues(OPT_ast_merge);
   Opts.LLVMArgs = Args.getAllArgValues(OPT_mllvm);
@@ -2593,13 +2594,18 @@ static void ParseLangArgs(LangOptions &Opts, ArgList &Args, InputKind IK,
       Args.hasFlag(OPT_fdouble_square_bracket_attributes,
                    OPT_fno_double_square_bracket_attributes, Opts.CPlusPlus11);
 
+  Opts.CPlusPlusModules = Opts.CPlusPlus2a;
   Opts.ModulesTS = Args.hasArg(OPT_fmodules_ts);
-  Opts.Modules = Args.hasArg(OPT_fmodules) || Opts.ModulesTS;
+  Opts.Modules =
+      Args.hasArg(OPT_fmodules) || Opts.ModulesTS || Opts.CPlusPlusModules;
   Opts.ModulesStrictDeclUse = Args.hasArg(OPT_fmodules_strict_decluse);
   Opts.ModulesDeclUse =
       Args.hasArg(OPT_fmodules_decluse) || Opts.ModulesStrictDeclUse;
+  // FIXME: We only need this in C++ modules / Modules TS if we might textually
+  // enter a different module (eg, when building a header unit).
   Opts.ModulesLocalVisibility =
-      Args.hasArg(OPT_fmodules_local_submodule_visibility) || Opts.ModulesTS;
+      Args.hasArg(OPT_fmodules_local_submodule_visibility) || Opts.ModulesTS ||
+      Opts.CPlusPlusModules;
   Opts.ModulesCodegen = Args.hasArg(OPT_fmodules_codegen);
   Opts.ModulesDebugInfo = Args.hasArg(OPT_fmodules_debuginfo);
   Opts.ModulesSearchAll = Opts.Modules &&

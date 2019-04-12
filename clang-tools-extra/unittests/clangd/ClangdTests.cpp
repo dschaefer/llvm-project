@@ -13,8 +13,10 @@
 #include "Matchers.h"
 #include "SyncAPI.h"
 #include "TestFS.h"
+#include "Threading.h"
 #include "URI.h"
 #include "clang/Config/config.h"
+#include "clang/Sema/CodeCompleteConsumer.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/Support/Errc.h"
@@ -36,7 +38,6 @@ namespace clangd {
 namespace {
 
 using ::testing::ElementsAre;
-using ::testing::Eq;
 using ::testing::Field;
 using ::testing::Gt;
 using ::testing::IsEmpty;
@@ -534,12 +535,12 @@ TEST_F(ClangdVFSTest, InvalidCompileCommand) {
   EXPECT_ERROR(runLocateSymbolAt(Server, FooCpp, Position()));
   EXPECT_ERROR(runFindDocumentHighlights(Server, FooCpp, Position()));
   EXPECT_ERROR(runRename(Server, FooCpp, Position(), "new_name"));
-  // FIXME: codeComplete and signatureHelp should also return errors when they
-  // can't parse the file.
+  // Identifier-based fallback completion.
   EXPECT_THAT(cantFail(runCodeComplete(Server, FooCpp, Position(),
                                        clangd::CodeCompleteOptions()))
                   .Completions,
-              IsEmpty());
+              ElementsAre(Field(&CodeCompletion::Name, "int"),
+                          Field(&CodeCompletion::Name, "main")));
   auto SigHelp = runSignatureHelp(Server, FooCpp, Position());
   ASSERT_TRUE(bool(SigHelp)) << "signatureHelp returned an error";
   EXPECT_THAT(SigHelp->signatures, IsEmpty());
@@ -1056,6 +1057,46 @@ TEST_F(ClangdVFSTest, FlagsWithPlugins) {
   auto Result = dumpASTWithoutMemoryLocs(Server, FooCpp);
   EXPECT_TRUE(Server.blockUntilIdleForTest()) << "Waiting for diagnostics";
   EXPECT_NE(Result, "<no-ast>");
+}
+
+TEST_F(ClangdVFSTest, FallbackWhenPreambleIsNotReady) {
+  MockFSProvider FS;
+  ErrorCheckingDiagConsumer DiagConsumer;
+  MockCompilationDatabase CDB;
+  ClangdServer Server(CDB, FS, DiagConsumer, ClangdServer::optsForTest());
+
+  auto FooCpp = testPath("foo.cpp");
+   Annotations Code(R"cpp(
+    namespace ns { int xyz; }
+    using namespace ns;
+    int main() {
+       xy^
+    })cpp");
+  FS.Files[FooCpp] = FooCpp;
+
+  auto Opts = clangd::CodeCompleteOptions();
+  Opts.AllowFallback = true;
+
+  // This will make compile command broken and preamble absent.
+  CDB.ExtraClangFlags = {"yolo.cc"};
+  Server.addDocument(FooCpp, Code.code());
+  ASSERT_TRUE(Server.blockUntilIdleForTest());
+  auto Res = cantFail(runCodeComplete(Server, FooCpp, Code.point(), Opts));
+  EXPECT_EQ(Res.Context, CodeCompletionContext::CCC_Recovery);
+  // Identifier-based fallback completion doesn't know about "symbol" scope.
+  EXPECT_THAT(Res.Completions,
+              ElementsAre(AllOf(Field(&CodeCompletion::Name, "xyz"),
+                                Field(&CodeCompletion::Scope, ""))));
+
+  // Make the compile command work again.
+  CDB.ExtraClangFlags = {"-std=c++11"};
+  Server.addDocument(FooCpp, Code.code());
+  ASSERT_TRUE(Server.blockUntilIdleForTest());
+  EXPECT_THAT(cantFail(runCodeComplete(Server, FooCpp, Code.point(),
+                                       clangd::CodeCompleteOptions()))
+                  .Completions,
+              ElementsAre(AllOf(Field(&CodeCompletion::Name, "xyz"),
+                                Field(&CodeCompletion::Scope, "ns::"))));
 }
 
 } // namespace

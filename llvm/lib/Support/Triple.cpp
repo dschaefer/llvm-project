@@ -211,6 +211,7 @@ StringRef Triple::getOSTypeName(OSType Kind) {
   case QNXNTO: return "nto";
   case Hurd: return "hurd";
   case WASI: return "wasi";
+  case Emscripten: return "emscripten";
   }
 
   llvm_unreachable("Invalid OSType");
@@ -512,6 +513,7 @@ static Triple::OSType parseOS(StringRef OSName) {
     .StartsWith("nto", Triple::QNXNTO)
     .StartsWith("hurd", Triple::Hurd)
     .StartsWith("wasi", Triple::WASI)
+    .StartsWith("emscripten", Triple::Emscripten)
     .Default(Triple::UnknownOS);
 }
 

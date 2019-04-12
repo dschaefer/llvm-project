@@ -1176,7 +1176,8 @@ unsigned ARMBaseInstrInfo::isStoreToStackSlot(const MachineInstr &MI,
 unsigned ARMBaseInstrInfo::isStoreToStackSlotPostFE(const MachineInstr &MI,
                                                     int &FrameIndex) const {
   SmallVector<const MachineMemOperand *, 1> Accesses;
-  if (MI.mayStore() && hasStoreToStackSlot(MI, Accesses)) {
+  if (MI.mayStore() && hasStoreToStackSlot(MI, Accesses) &&
+      Accesses.size() == 1) {
     FrameIndex =
         cast<FixedStackPseudoSourceValue>(Accesses.front()->getPseudoValue())
             ->getFrameIndex();
@@ -1396,7 +1397,8 @@ unsigned ARMBaseInstrInfo::isLoadFromStackSlot(const MachineInstr &MI,
 unsigned ARMBaseInstrInfo::isLoadFromStackSlotPostFE(const MachineInstr &MI,
                                                      int &FrameIndex) const {
   SmallVector<const MachineMemOperand *, 1> Accesses;
-  if (MI.mayLoad() && hasLoadFromStackSlot(MI, Accesses)) {
+  if (MI.mayLoad() && hasLoadFromStackSlot(MI, Accesses) &&
+      Accesses.size() == 1) {
     FrameIndex =
         cast<FixedStackPseudoSourceValue>(Accesses.front()->getPseudoValue())
             ->getFrameIndex();
@@ -1897,7 +1899,7 @@ isProfitableToIfCvt(MachineBasicBlock &MBB,
   // If we are optimizing for size, see if the branch in the predecessor can be
   // lowered to cbn?z by the constant island lowering pass, and return false if
   // so. This results in a shorter instruction sequence.
-  if (MBB.getParent()->getFunction().optForSize()) {
+  if (MBB.getParent()->getFunction().hasOptSize()) {
     MachineBasicBlock *Pred = *MBB.pred_begin();
     if (!Pred->empty()) {
       MachineInstr *LastMI = &*Pred->rbegin();
@@ -2265,7 +2267,7 @@ bool llvm::tryFoldSPUpdateIntoPushPop(const ARMSubtarget &Subtarget,
                                       unsigned NumBytes) {
   // This optimisation potentially adds lots of load and store
   // micro-operations, it's only really a great benefit to code-size.
-  if (!Subtarget.optForMinSize())
+  if (!Subtarget.hasMinSize())
     return false;
 
   // If only one register is pushed/popped, LLVM can use an LDR/STR
@@ -2331,6 +2333,8 @@ bool llvm::tryFoldSPUpdateIntoPushPop(const ARMSubtarget &Subtarget,
   for (int CurRegEnc = FirstRegEnc - 1; CurRegEnc >= 0 && RegsNeeded;
        --CurRegEnc) {
     unsigned CurReg = RegClass->getRegister(CurRegEnc);
+    if (IsT1PushPop && CurReg > ARM::R7)
+      continue;
     if (!IsPop) {
       // Pushing any register is completely harmless, mark the register involved
       // as undef since we don't care about its value and must not restore it
@@ -2869,7 +2873,15 @@ bool ARMBaseInstrInfo::optimizeCompareInstr(
       // change. We can't do this transformation.
       return false;
 
-  } while (I != B);
+    if (I == B) {
+      // In some cases, we scan the use-list of an instruction for an AND;
+      // that AND is in the same BB, but may not be scheduled before the
+      // corresponding TST.  In that case, bail out.
+      //
+      // FIXME: We could try to reschedule the AND.
+      return false;
+    }
+  } while (true);
 
   // Return false if no candidates exist.
   if (!MI && !SubAdd)
@@ -3425,7 +3437,12 @@ unsigned ARMBaseInstrInfo::getNumLDMAddresses(const MachineInstr &MI) const {
        I != E; ++I) {
     Size += (*I)->getSize();
   }
-  return Size / 4;
+  // FIXME: The scheduler currently can't handle values larger than 16. But
+  // the values can actually go up to 32 for floating-point load/store
+  // multiple (VLDMIA etc.). Also, the way this code is reasoning about memory
+  // operations isn't right; we could end up with "extra" memory operands for
+  // various reasons, like tail merge merging two memory operations.
+  return std::min(Size / 4, 16U);
 }
 
 static unsigned getNumMicroOpsSingleIssuePlusExtras(unsigned Opc,
@@ -4146,7 +4163,7 @@ int ARMBaseInstrInfo::getOperandLatencyImpl(
     // instructions).
     if (Latency > 0 && Subtarget.isThumb2()) {
       const MachineFunction *MF = DefMI.getParent()->getParent();
-      // FIXME: Use Function::optForSize().
+      // FIXME: Use Function::hasOptSize().
       if (MF->getFunction().hasFnAttribute(Attribute::OptimizeForSize))
         --Latency;
     }

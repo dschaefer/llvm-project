@@ -27,16 +27,12 @@ using namespace lldb;
 using namespace lldb_private;
 using namespace std;
 
-//----------------------------------------------------------------------
 // Constructor
-//----------------------------------------------------------------------
 DWARFDebugInfo::DWARFDebugInfo(lldb_private::DWARFContext &context)
     : m_dwarf2Data(NULL), m_context(context), m_compile_units(),
       m_cu_aranges_up() {}
 
-//----------------------------------------------------------------------
 // SetDwarfData
-//----------------------------------------------------------------------
 void DWARFDebugInfo::SetDwarfData(SymbolFileDWARF *dwarf2Data) {
   m_dwarf2Data = dwarf2Data;
   m_compile_units.clear();
@@ -91,8 +87,8 @@ void DWARFDebugInfo::ParseCompileUnitHeadersIfNeeded() {
   const auto &debug_info_data = m_dwarf2Data->get_debug_info_data();
 
   while (debug_info_data.ValidOffset(offset)) {
-    llvm::Expected<DWARFUnitSP> cu_sp = DWARFCompileUnit::extract(
-        m_dwarf2Data, m_context, debug_info_data, &offset);
+    llvm::Expected<DWARFUnitSP> cu_sp =
+        DWARFCompileUnit::extract(m_dwarf2Data, debug_info_data, &offset);
 
     if (!cu_sp) {
       // FIXME: Propagate this error up.
@@ -201,11 +197,9 @@ DWARFDebugInfo::GetDIEForDIEOffset(dw_offset_t die_offset) {
   return DWARFDIE();
 }
 
-//----------------------------------------------------------------------
 // GetDIE()
 //
 // Get the DIE (Debug Information Entry) with the specified offset.
-//----------------------------------------------------------------------
 DWARFDIE
 DWARFDebugInfo::GetDIE(const DIERef &die_ref) {
   DWARFUnit *cu = GetCompileUnit(die_ref);

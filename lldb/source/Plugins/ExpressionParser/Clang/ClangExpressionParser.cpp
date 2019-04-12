@@ -309,8 +309,7 @@ ClangExpressionParser::ClangExpressionParser(
   }
 
   // Make sure clang uses the same VFS as LLDB.
-  m_compiler->setVirtualFileSystem(
-      FileSystem::Instance().GetVirtualFileSystem());
+  m_compiler->createFileManager(FileSystem::Instance().GetVirtualFileSystem());
 
   lldb::LanguageType frame_lang =
       expr.Language(); // defaults to lldb::eLanguageTypeUnknown
@@ -614,13 +613,11 @@ ClangExpressionParser::~ClangExpressionParser() {}
 
 namespace {
 
-//----------------------------------------------------------------------
 /// \class CodeComplete
 ///
 /// A code completion consumer for the clang Sema that is responsible for
 /// creating the completion suggestions when a user requests completion
 /// of an incomplete `expr` invocation.
-//----------------------------------------------------------------------
 class CodeComplete : public CodeCompleteConsumer {
   CodeCompletionTUInfo m_info;
 

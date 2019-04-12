@@ -1442,7 +1442,8 @@ void Target::SetExecutableModule(ModuleSP &executable_sp,
                        "Target::SetExecutableModule (executable = '%s')",
                        executable_sp->GetFileSpec().GetPath().c_str());
 
-    m_images.Append(executable_sp); // The first image is our executable file
+    const bool notify = true;
+    m_images.Append(executable_sp, notify); // The first image is our executable file
 
     // If we haven't set an architecture yet, reset our architecture based on
     // what we found in the executable module.
@@ -1470,6 +1471,7 @@ void Target::SetExecutableModule(ModuleSP &executable_sp,
     }
 
     if (executable_objfile && load_dependents) {
+      ModuleList added_modules;
       executable_objfile->GetDependentModules(dependent_files);
       for (uint32_t i = 0; i < dependent_files.GetSize(); i++) {
         FileSpec dependent_file_spec(
@@ -1482,13 +1484,16 @@ void Target::SetExecutableModule(ModuleSP &executable_sp,
           platform_dependent_file_spec = dependent_file_spec;
 
         ModuleSpec module_spec(platform_dependent_file_spec, m_arch.GetSpec());
-        ModuleSP image_module_sp(GetSharedModule(module_spec));
+        ModuleSP image_module_sp(GetOrCreateModule(module_spec, 
+                                 false /* notify */));
         if (image_module_sp) {
+          added_modules.AppendIfNeeded (image_module_sp, false);
           ObjectFile *objfile = image_module_sp->GetObjectFile();
           if (objfile)
             objfile->GetDependentModules(dependent_files);
         }
       }
+      ModulesDidLoad(added_modules);
     }
   }
 }
@@ -1606,20 +1611,19 @@ bool Target::MergeArchitecture(const ArchSpec &arch_spec) {
   return false;
 }
 
-void Target::WillClearList(const ModuleList &module_list) {}
+void Target::NotifyWillClearList(const ModuleList &module_list) {}
 
-void Target::ModuleAdded(const ModuleList &module_list,
+void Target::NotifyModuleAdded(const ModuleList &module_list,
                          const ModuleSP &module_sp) {
   // A module is being added to this target for the first time
   if (m_valid) {
     ModuleList my_module_list;
     my_module_list.Append(module_sp);
-    LoadScriptingResourceForModule(module_sp, this);
     ModulesDidLoad(my_module_list);
   }
 }
 
-void Target::ModuleRemoved(const ModuleList &module_list,
+void Target::NotifyModuleRemoved(const ModuleList &module_list,
                            const ModuleSP &module_sp) {
   // A module is being removed from this target.
   if (m_valid) {
@@ -1629,7 +1633,7 @@ void Target::ModuleRemoved(const ModuleList &module_list,
   }
 }
 
-void Target::ModuleUpdated(const ModuleList &module_list,
+void Target::NotifyModuleUpdated(const ModuleList &module_list,
                            const ModuleSP &old_module_sp,
                            const ModuleSP &new_module_sp) {
   // A module is replacing an already added module
@@ -1641,8 +1645,20 @@ void Target::ModuleUpdated(const ModuleList &module_list,
   }
 }
 
+void Target::NotifyModulesRemoved(lldb_private::ModuleList &module_list) {
+  ModulesDidUnload (module_list, false);
+}
+
+
 void Target::ModulesDidLoad(ModuleList &module_list) {
   if (m_valid && module_list.GetSize()) {
+
+    const ModuleList &modules = GetImages();
+    const size_t num_images = modules.GetSize();
+    for (size_t idx = 0; idx < num_images; ++idx) {
+      ModuleSP module_sp(modules.GetModuleAtIndex(idx));
+      LoadScriptingResourceForModule(module_sp, this);
+    }
     m_breakpoint_list.UpdateBreakpoints(module_list, true, false);
     m_internal_breakpoint_list.UpdateBreakpoints(module_list, true, false);
     if (m_process_sp) {
@@ -1984,8 +2000,8 @@ bool Target::ReadPointerFromMemory(const Address &addr, bool prefer_file_cache,
   return false;
 }
 
-ModuleSP Target::GetSharedModule(const ModuleSpec &module_spec,
-                                 Status *error_ptr) {
+ModuleSP Target::GetOrCreateModule(const ModuleSpec &module_spec, bool notify,
+                                   Status *error_ptr) {
   ModuleSP module_sp;
 
   Status error;
@@ -2118,8 +2134,9 @@ ModuleSP Target::GetSharedModule(const ModuleSpec &module_spec,
           Module *old_module_ptr = old_module_sp.get();
           old_module_sp.reset();
           ModuleList::RemoveSharedModuleIfOrphaned(old_module_ptr);
-        } else
-          m_images.Append(module_sp);
+        } else {
+          m_images.Append(module_sp, notify);
+        }
       } else
         module_sp.reset();
     }
@@ -3143,9 +3160,7 @@ void Target::FinalizeFileActions(ProcessLaunchInfo &info) {
   }
 }
 
-//--------------------------------------------------------------
 // Target::StopHook
-//--------------------------------------------------------------
 Target::StopHook::StopHook(lldb::TargetSP target_sp, lldb::user_id_t uid)
     : UserID(uid), m_target_sp(target_sp), m_commands(), m_specifier_sp(),
       m_thread_spec_up() {}
@@ -3212,9 +3227,7 @@ void Target::StopHook::GetDescription(Stream *s,
   s->SetIndentLevel(indent_level);
 }
 
-//--------------------------------------------------------------
 // class TargetProperties
-//--------------------------------------------------------------
 
 // clang-format off
 static constexpr OptionEnumValueElement g_dynamic_value_types[] = {
@@ -3575,9 +3588,7 @@ protected:
   mutable bool m_got_host_env;
 };
 
-//----------------------------------------------------------------------
 // TargetProperties
-//----------------------------------------------------------------------
 static constexpr PropertyDefinition g_experimental_properties[]{
     {"inject-local-vars", OptionValue::eTypeBoolean, true, true, nullptr,
      {},
@@ -3603,9 +3614,7 @@ TargetExperimentalProperties::TargetExperimentalProperties()
   m_collection_sp->Initialize(g_experimental_properties);
 }
 
-//----------------------------------------------------------------------
 // TargetProperties
-//----------------------------------------------------------------------
 TargetProperties::TargetProperties(Target *target)
     : Properties(), m_launch_info() {
   if (target) {
@@ -4203,9 +4212,7 @@ void TargetProperties::DisableSTDIOValueChangedCallback(
     this_->m_launch_info.GetFlags().Clear(lldb::eLaunchFlagDisableSTDIO);
 }
 
-//----------------------------------------------------------------------
 // Target::TargetEventData
-//----------------------------------------------------------------------
 
 Target::TargetEventData::TargetEventData(const lldb::TargetSP &target_sp)
     : EventData(), m_target_sp(target_sp), m_module_list() {}

@@ -7,6 +7,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/ObjectYAML/MinidumpYAML.h"
+#include "llvm/Support/ConvertUTF.h"
 
 using namespace llvm;
 using namespace llvm::MinidumpYAML;
@@ -17,7 +18,7 @@ class BlobAllocator {
 public:
   size_t tell() const { return NextOffset; }
 
-  size_t AllocateCallback(size_t Size,
+  size_t allocateCallback(size_t Size,
                           std::function<void(raw_ostream &)> Callback) {
     size_t Offset = NextOffset;
     NextOffset += Size;
@@ -25,19 +26,21 @@ public:
     return Offset;
   }
 
-  size_t AllocateBytes(ArrayRef<uint8_t> Data) {
-    return AllocateCallback(
+  size_t allocateBytes(ArrayRef<uint8_t> Data) {
+    return allocateCallback(
         Data.size(), [Data](raw_ostream &OS) { OS << toStringRef(Data); });
   }
 
-  template <typename T> size_t AllocateArray(ArrayRef<T> Data) {
-    return AllocateBytes({reinterpret_cast<const uint8_t *>(Data.data()),
+  template <typename T> size_t allocateArray(ArrayRef<T> Data) {
+    return allocateBytes({reinterpret_cast<const uint8_t *>(Data.data()),
                           sizeof(T) * Data.size()});
   }
 
-  template <typename T> size_t AllocateObject(const T &Data) {
-    return AllocateArray(makeArrayRef(Data));
+  template <typename T> size_t allocateObject(const T &Data) {
+    return allocateArray(makeArrayRef(Data));
   }
+
+  size_t allocateString(StringRef Str);
 
   void writeTo(raw_ostream &OS) const;
 
@@ -47,6 +50,26 @@ private:
   std::vector<std::function<void(raw_ostream &)>> Callbacks;
 };
 } // namespace
+
+size_t BlobAllocator::allocateString(StringRef Str) {
+  SmallVector<UTF16, 32> WStr;
+  bool OK = convertUTF8ToUTF16String(Str, WStr);
+  assert(OK && "Invalid UTF8 in Str?");
+  (void)OK;
+
+  SmallVector<support::ulittle16_t, 32> EndianStr(WStr.size() + 1,
+                                                  support::ulittle16_t());
+  copy(WStr, EndianStr.begin());
+  return allocateCallback(
+      sizeof(uint32_t) + EndianStr.size() * sizeof(support::ulittle16_t),
+      [EndianStr](raw_ostream &OS) {
+        // Length does not include the null-terminator.
+        support::ulittle32_t Length(2 * (EndianStr.size() - 1));
+        OS.write(reinterpret_cast<const char *>(&Length), sizeof(Length));
+        OS.write(reinterpret_cast<const char *>(EndianStr.begin()),
+                 sizeof(support::ulittle16_t) * EndianStr.size());
+      });
+}
 
 void BlobAllocator::writeTo(raw_ostream &OS) const {
   size_t BeginOffset = OS.tell();
@@ -269,7 +292,7 @@ static void streamMapping(yaml::IO &IO, SystemInfoStream &Stream) {
   mapOptional(IO, "Minor Version", Info.MinorVersion, 0);
   mapOptional(IO, "Build Number", Info.BuildNumber, 0);
   IO.mapRequired("Platform ID", Info.PlatformId);
-  mapOptionalHex(IO, "CSD Version RVA", Info.CSDVersionRVA, 0);
+  IO.mapOptional("CSD Version", Stream.CSDVersion, "");
   mapOptionalHex(IO, "Suite Mask", Info.SuiteMask, 0);
   mapOptionalHex(IO, "Reserved", Info.Reserved, 0);
   switch (static_cast<ProcessorArchitecture>(Info.ProcessorArch)) {
@@ -337,34 +360,43 @@ static Directory layout(BlobAllocator &File, Stream &S) {
   Directory Result;
   Result.Type = S.Type;
   Result.Location.RVA = File.tell();
+  Optional<size_t> DataEnd;
   switch (S.Kind) {
   case Stream::StreamKind::RawContent: {
     RawContentStream &Raw = cast<RawContentStream>(S);
-    File.AllocateCallback(Raw.Size, [&Raw](raw_ostream &OS) {
+    File.allocateCallback(Raw.Size, [&Raw](raw_ostream &OS) {
       Raw.Content.writeAsBinary(OS);
       assert(Raw.Content.binary_size() <= Raw.Size);
       OS << std::string(Raw.Size - Raw.Content.binary_size(), '\0');
     });
     break;
   }
-  case Stream::StreamKind::SystemInfo:
-    File.AllocateObject(cast<SystemInfoStream>(S).Info);
-    break;
-  case Stream::StreamKind::TextContent:
-    File.AllocateArray(arrayRefFromStringRef(cast<TextContentStream>(S).Text));
+  case Stream::StreamKind::SystemInfo: {
+    SystemInfoStream &SystemInfo = cast<SystemInfoStream>(S);
+    File.allocateObject(SystemInfo.Info);
+    // The CSD string is not a part of the stream.
+    DataEnd = File.tell();
+    SystemInfo.Info.CSDVersionRVA = File.allocateString(SystemInfo.CSDVersion);
     break;
   }
-  Result.Location.DataSize = File.tell() - Result.Location.RVA;
+  case Stream::StreamKind::TextContent:
+    File.allocateArray(arrayRefFromStringRef(cast<TextContentStream>(S).Text));
+    break;
+  }
+  // If DataEnd is not set, we assume everything we generated is a part of the
+  // stream.
+  Result.Location.DataSize =
+      DataEnd.getValueOr(File.tell()) - Result.Location.RVA;
   return Result;
 }
 
 void MinidumpYAML::writeAsBinary(Object &Obj, raw_ostream &OS) {
   BlobAllocator File;
-  File.AllocateObject(Obj.Header);
+  File.allocateObject(Obj.Header);
 
   std::vector<Directory> StreamDirectory(Obj.Streams.size());
   Obj.Header.StreamDirectoryRVA =
-      File.AllocateArray(makeArrayRef(StreamDirectory));
+      File.allocateArray(makeArrayRef(StreamDirectory));
   Obj.Header.NumberOfStreams = StreamDirectory.size();
 
   for (auto &Stream : enumerate(Obj.Streams))
@@ -382,4 +414,40 @@ Error MinidumpYAML::writeAsBinary(StringRef Yaml, raw_ostream &OS) {
 
   writeAsBinary(Obj, OS);
   return Error::success();
+}
+
+Expected<std::unique_ptr<Stream>>
+Stream::create(const Directory &StreamDesc, const object::MinidumpFile &File) {
+  StreamKind Kind = getKind(StreamDesc.Type);
+  switch (Kind) {
+  case StreamKind::RawContent:
+    return llvm::make_unique<RawContentStream>(StreamDesc.Type,
+                                               File.getRawStream(StreamDesc));
+  case StreamKind::SystemInfo: {
+    auto ExpectedInfo = File.getSystemInfo();
+    if (!ExpectedInfo)
+      return ExpectedInfo.takeError();
+    auto ExpectedCSDVersion = File.getString(ExpectedInfo->CSDVersionRVA);
+    if (!ExpectedCSDVersion)
+      return ExpectedInfo.takeError();
+    return llvm::make_unique<SystemInfoStream>(*ExpectedInfo,
+                                               std::move(*ExpectedCSDVersion));
+  }
+  case StreamKind::TextContent:
+    return llvm::make_unique<TextContentStream>(
+        StreamDesc.Type, toStringRef(File.getRawStream(StreamDesc)));
+  }
+  llvm_unreachable("Unhandled stream kind!");
+}
+
+Expected<Object> Object::create(const object::MinidumpFile &File) {
+  std::vector<std::unique_ptr<Stream>> Streams;
+  Streams.reserve(File.streams().size());
+  for (const Directory &StreamDesc : File.streams()) {
+    auto ExpectedStream = Stream::create(StreamDesc, File);
+    if (!ExpectedStream)
+      return ExpectedStream.takeError();
+    Streams.push_back(std::move(*ExpectedStream));
+  }
+  return Object(File.header(), std::move(Streams));
 }

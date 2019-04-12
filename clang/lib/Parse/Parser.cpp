@@ -980,9 +980,10 @@ Parser::ParseDeclOrFunctionDefInternal(ParsedAttributesWithRange &attrs,
   if (getLangOpts().ObjC && Tok.is(tok::at)) {
     SourceLocation AtLoc = ConsumeToken(); // the "@"
     if (!Tok.isObjCAtKeyword(tok::objc_interface) &&
-        !Tok.isObjCAtKeyword(tok::objc_protocol)) {
+        !Tok.isObjCAtKeyword(tok::objc_protocol) &&
+        !Tok.isObjCAtKeyword(tok::objc_implementation)) {
       Diag(Tok, diag::err_objc_unexpected_attr);
-      SkipUntil(tok::semi); // FIXME: better skip?
+      SkipUntil(tok::semi);
       return nullptr;
     }
 
@@ -996,6 +997,9 @@ Parser::ParseDeclOrFunctionDefInternal(ParsedAttributesWithRange &attrs,
 
     if (Tok.isObjCAtKeyword(tok::objc_protocol))
       return ParseObjCAtProtocolDeclaration(AtLoc, DS.getAttributes());
+
+    if (Tok.isObjCAtKeyword(tok::objc_implementation))
+      return ParseObjCAtImplementationDeclaration(AtLoc, DS.getAttributes());
 
     return Actions.ConvertDeclToDeclGroup(
             ParseObjCAtInterfaceDeclaration(AtLoc, DS.getAttributes()));
@@ -1487,7 +1491,7 @@ void Parser::AnnotateScopeToken(CXXScopeSpec &SS, bool IsNewAnnotation) {
 ///        no typo correction will be performed.
 Parser::AnnotatedNameKind
 Parser::TryAnnotateName(bool IsAddressOfOperand,
-                        std::unique_ptr<CorrectionCandidateCallback> CCC) {
+                        CorrectionCandidateCallback *CCC) {
   assert(Tok.is(tok::identifier) || Tok.is(tok::annot_cxxscope));
 
   const bool EnteringContext = false;
@@ -1523,9 +1527,9 @@ Parser::TryAnnotateName(bool IsAddressOfOperand,
   // after a scope specifier, because in general we can't recover from typos
   // there (eg, after correcting 'A::template B<X>::C' [sic], we would need to
   // jump back into scope specifier parsing).
-  Sema::NameClassification Classification = Actions.ClassifyName(
-      getCurScope(), SS, Name, NameLoc, Next, IsAddressOfOperand,
-      SS.isEmpty() ? std::move(CCC) : nullptr);
+  Sema::NameClassification Classification =
+      Actions.ClassifyName(getCurScope(), SS, Name, NameLoc, Next,
+                           IsAddressOfOperand, SS.isEmpty() ? CCC : nullptr);
 
   switch (Classification.getKind()) {
   case Sema::NC_Error:

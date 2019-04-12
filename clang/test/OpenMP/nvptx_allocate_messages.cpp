@@ -1,17 +1,22 @@
 // RUN: %clang_cc1 -verify -fopenmp -triple x86_64-apple-darwin10.6.0 -fopenmp-targets=nvptx64-nvidia-cuda  -emit-llvm-bc -o %t-host.bc %s
 // RUN: %clang_cc1 -verify -DDEVICE -fopenmp -triple nvptx64-nvidia-cuda -fopenmp-targets=nvptx64-nvidia-cuda -fsyntax-only %s -fopenmp-is-device -fopenmp-host-ir-file-path %t-host.bc
-#ifndef DEVICE
+// RUN: %clang_cc1 -verify -DDEVICE -DREQUIRES -fopenmp -triple nvptx64-nvidia-cuda -fopenmp-targets=nvptx64-nvidia-cuda -fsyntax-only %s -fopenmp-is-device -fopenmp-host-ir-file-path %t-host.bc
+#if !defined(DEVICE) || defined(REQUIRES)
 // expected-no-diagnostics
 #endif // DEVICE
 
 #ifndef HEADER
 #define HEADER
 
+#if defined(REQUIRES) && defined(DEVICE)
+#pragma omp requires dynamic_allocators
+#endif // REQUIRES && DEVICE
+
 int bar() {
   int res = 0;
-#ifdef DEVICE
+#if defined(DEVICE) && !defined(REQUIRES)
 // expected-error@+2 {{expected an 'allocator' clause inside of the target region; provide an 'allocator' clause or use 'requires' directive with the 'dynamic_allocators' clause}}
-#endif // DEVICE
+#endif // DEVICE && !REQUIRES
 #pragma omp allocate(res)
   return 0;
 }
@@ -52,6 +57,11 @@ template <class T> T foo() {
   T v;
   #pragma omp allocate(v) allocator(omp_cgroup_mem_alloc)
   v = ST<T>::m;
+#if defined(DEVICE) && !defined(REQUIRES)
+// expected-error@+2 2 {{expected an allocator expression inside of the target region; provide an allocator expression or use 'requires' directive with the 'dynamic_allocators' clause}}
+#endif // DEVICE && !REQUIRES
+#pragma omp parallel private(v) allocate(v)
+  v = 0;
   return v;
 }
 
@@ -65,13 +75,14 @@ int main () {
 #pragma omp allocate(a) allocator(omp_thread_mem_alloc)
   a=2;
   double b = 3;
-#ifdef DEVICE
+#if defined(DEVICE) && !defined(REQUIRES)
 // expected-error@+2 {{expected an 'allocator' clause inside of the target region; provide an 'allocator' clause or use 'requires' directive with the 'dynamic_allocators' clause}}
-#endif // DEVICE
+#endif // DEVICE && !REQUIRES
 #pragma omp allocate(b)
-#ifdef DEVICE
+#if defined(DEVICE) && !defined(REQUIRES)
+// expected-note@+3 {{in instantiation of function template specialization 'foo<int>' requested here}}
 // expected-note@+2 {{called by 'main'}}
-#endif // DEVICE
+#endif // DEVICE && !REQUIRES
   return (foo<int>() + bar());
 }
 

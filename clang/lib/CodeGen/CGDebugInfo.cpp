@@ -372,7 +372,7 @@ CGDebugInfo::computeChecksum(FileID FID, SmallString<32> &Checksum) const {
 
   SourceManager &SM = CGM.getContext().getSourceManager();
   bool Invalid;
-  llvm::MemoryBuffer *MemBuffer = SM.getBuffer(FID, &Invalid);
+  const llvm::MemoryBuffer *MemBuffer = SM.getBuffer(FID, &Invalid);
   if (Invalid)
     return None;
 
@@ -3034,10 +3034,8 @@ llvm::DICompositeType *CGDebugInfo::CreateLimitedType(const RecordType *Ty) {
     else
       Flags |= llvm::DINode::FlagTypePassByValue;
 
-    // Record if a C++ record is trivial type.
-    if (CXXRD->isTrivial())
-      Flags |= llvm::DINode::FlagTrivial;
-    else
+    // Record if a C++ record is non-trivial type.
+    if (!CXXRD->isTrivial())
       Flags |= llvm::DINode::FlagNonTrivial;
   }
 

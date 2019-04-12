@@ -172,10 +172,16 @@ class CompoundStatementIndenter {
 public:
   CompoundStatementIndenter(UnwrappedLineParser *Parser,
                             const FormatStyle &Style, unsigned &LineLevel)
+      : CompoundStatementIndenter(Parser, LineLevel,
+                                  Style.BraceWrapping.AfterControlStatement,
+                                  Style.BraceWrapping.IndentBraces) {
+  }
+  CompoundStatementIndenter(UnwrappedLineParser *Parser, unsigned &LineLevel,
+                            bool WrapBrace, bool IndentBrace)
       : LineLevel(LineLevel), OldLineLevel(LineLevel) {
-    if (Style.BraceWrapping.AfterControlStatement)
+    if (WrapBrace)
       Parser->addUnwrappedLine();
-    if (Style.BraceWrapping.IndentBraces)
+    if (IndentBrace)
       ++LineLevel;
   }
   ~CompoundStatementIndenter() { LineLevel = OldLineLevel; }
@@ -1475,6 +1481,7 @@ bool UnwrappedLineParser::tryToParseLambda() {
       return true;
     }
   }
+  FormatTok->Type = TT_LambdaLBrace;
   LSquare.Type = TT_LambdaLSquare;
   parseChildBlock();
   return true;
@@ -1949,7 +1956,9 @@ void UnwrappedLineParser::parseLabel() {
   if (Line->Level > 1 || (!Line->InPPDirective && Line->Level > 0))
     --Line->Level;
   if (CommentsBeforeNextToken.empty() && FormatTok->Tok.is(tok::l_brace)) {
-    CompoundStatementIndenter Indenter(this, Style, Line->Level);
+    CompoundStatementIndenter Indenter(this, Line->Level,
+                                       Style.BraceWrapping.AfterCaseLabel,
+                                       Style.BraceWrapping.IndentBraces);
     parseBlock(/*MustBeDeclaration=*/false);
     if (FormatTok->Tok.is(tok::kw_break)) {
       if (Style.BraceWrapping.AfterControlStatement)
@@ -2016,6 +2025,10 @@ bool UnwrappedLineParser::parseEnum() {
   // error and thus assume it is just an identifier.
   if (Style.Language == FormatStyle::LK_JavaScript &&
       FormatTok->isOneOf(tok::colon, tok::question))
+    return false;
+
+  // In protobuf, "enum" can be used as a field name.
+  if (Style.Language == FormatStyle::LK_Proto && FormatTok->is(tok::equal))
     return false;
 
   // Eat up enum class ...
