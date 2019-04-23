@@ -389,6 +389,7 @@ static bool isPreISelGenericFloatingPointOpcode(unsigned Opc) {
   case TargetOpcode::G_FADD:
   case TargetOpcode::G_FSUB:
   case TargetOpcode::G_FMUL:
+  case TargetOpcode::G_FMA:
   case TargetOpcode::G_FDIV:
   case TargetOpcode::G_FCONSTANT:
   case TargetOpcode::G_FPEXT:
@@ -404,6 +405,8 @@ static bool isPreISelGenericFloatingPointOpcode(unsigned Opc) {
   case TargetOpcode::G_FSQRT:
   case TargetOpcode::G_FABS:
   case TargetOpcode::G_FEXP:
+  case TargetOpcode::G_FRINT:
+  case TargetOpcode::G_INTRINSIC_TRUNC:
     return true;
   }
   return false;

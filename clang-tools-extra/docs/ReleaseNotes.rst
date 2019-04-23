@@ -108,6 +108,12 @@ Improvements to clang-tidy
   Checks whether there are underscores in googletest test and test case names in
   test macros, which is prohibited by the Googletest FAQ.
 
+- New :doc:`objc-super-self <clang-tidy/checks/objc-super-self>` check.
+
+  Finds invocations of ``-self`` on super instances in initializers of
+  subclasses of ``NSObject`` and recommends calling a superclass initializer
+  instead.
+
 - New alias :doc:`cppcoreguidelines-explicit-virtual-functions
   <clang-tidy/checks/cppcoreguidelines-explicit-virtual-functions>` to
   :doc:`modernize-use-override
@@ -118,6 +124,12 @@ Improvements to clang-tidy
   `CommentBoolLiterals`, `CommentIntegerLiterals`, `CommentFloatLiterals`,
   `CommentUserDefiniedLiterals`, `CommentStringLiterals`,
   `CommentCharacterLiterals` & `CommentNullPtrs` options.
+
+- The :doc:`bugprone-too-small-loop-variable
+  <clang-tidy/checks/bugprone-too-small-loop-variable>` now supports
+  `MagnitudeBitsUpperLimit` option. The default value was set to 16,
+  which greatly reduces warnings related to loops which are unlikely to
+  cause an actual functional bug.
 
 - The :doc:`google-runtime-int <clang-tidy/checks/google-runtime-int>`
   check has been disabled in Objective-C++.

@@ -276,6 +276,10 @@ Demangler::demangleSpecialTableSymbolNode(StringView &MangledName,
   SpecialTableSymbolNode *STSN = Arena.alloc<SpecialTableSymbolNode>();
   STSN->Name = QN;
   bool IsMember = false;
+  if (MangledName.empty()) {
+    Error = true;
+    return nullptr;
+  }
   char Front = MangledName.popFront();
   if (Front != '6' && Front != '7') {
     Error = true;
@@ -622,8 +626,8 @@ Demangler::translateIntrinsicFunctionCode(char CH,
                                        // iter
       IFK::None,                       // ?__J local static thread guard
       IFK::None,                       // ?__K operator ""_name
-      IFK::CoAwait,                    // ?__L co_await
-      IFK::None,                       // ?__M <unused>
+      IFK::CoAwait,                    // ?__L operator co_await
+      IFK::Spaceship,                  // ?__M operator<=>
       IFK::None,                       // ?__N <unused>
       IFK::None,                       // ?__O <unused>
       IFK::None,                       // ?__P <unused>
@@ -654,7 +658,10 @@ Demangler::translateIntrinsicFunctionCode(char CH,
 IdentifierNode *
 Demangler::demangleFunctionIdentifierCode(StringView &MangledName,
                                           FunctionIdentifierCodeGroup Group) {
-  assert(!MangledName.empty());
+  if (MangledName.empty()) {
+    Error = true;
+    return nullptr;
+  }
   switch (Group) {
   case FunctionIdentifierCodeGroup::Basic:
     switch (char CH = MangledName.popFront()) {
@@ -680,7 +687,6 @@ Demangler::demangleFunctionIdentifierCode(StringView &MangledName,
           translateIntrinsicFunctionCode(CH, Group));
     }
   }
-  // No Mangling Yet:      Spaceship,                    // operator<=>
 
   DEMANGLE_UNREACHABLE;
 }
@@ -831,7 +837,7 @@ VariableSymbolNode *Demangler::demangleVariableEncoding(StringView &MangledName,
 // <number>               ::= [?] <non-negative integer>
 //
 // <non-negative integer> ::= <decimal digit> # when 1 <= Number <= 10
-//                        ::= <hex digit>+ @  # when Numbrer == 0 or >= 10
+//                        ::= <hex digit>+ @  # when Number == 0 or >= 10
 //
 // <hex-digit>            ::= [A-P]           # A = 0, B = 1, ...
 std::pair<uint64_t, bool> Demangler::demangleNumber(StringView &MangledName) {
@@ -940,8 +946,18 @@ Demangler::demangleTemplateInstantiationName(StringView &MangledName,
   if (Error)
     return nullptr;
 
-  if (NBB & NBB_Template)
+  if (NBB & NBB_Template) {
+    // NBB_Template is only set for types and non-leaf names ("a::" in "a::b").
+    // Structors and conversion operators only makes sense in a leaf name, so
+    // reject them in NBB_Template contexts.
+    if (Identifier->kind() == NodeKind::ConversionOperatorIdentifier ||
+        Identifier->kind() == NodeKind::StructorIdentifier) {
+      Error = true;
+      return nullptr;
+    }
+
     memorizeIdentifier(Identifier);
+  }
 
   return Identifier;
 }
@@ -965,6 +981,7 @@ static uint8_t rebasedHexDigitToNumber(char C) {
 }
 
 uint8_t Demangler::demangleCharLiteral(StringView &MangledName) {
+  assert(!MangledName.empty());
   if (!MangledName.startsWith('?'))
     return MangledName.popFront();
 
@@ -1022,7 +1039,7 @@ wchar_t Demangler::demangleWcharLiteral(StringView &MangledName) {
   uint8_t C1, C2;
 
   C1 = demangleCharLiteral(MangledName);
-  if (Error)
+  if (Error || MangledName.empty())
     goto WCharLiteralError;
   C2 = demangleCharLiteral(MangledName);
   if (Error)
@@ -1053,23 +1070,26 @@ static void outputHex(OutputStream &OS, unsigned C) {
   char TempBuffer[17];
 
   ::memset(TempBuffer, 0, sizeof(TempBuffer));
-  constexpr int MaxPos = 15;
+  constexpr int MaxPos = sizeof(TempBuffer) - 1;
 
-  int Pos = MaxPos - 1;
+  int Pos = MaxPos - 1; // TempBuffer[MaxPos] is the terminating \0.
   while (C != 0) {
     for (int I = 0; I < 2; ++I) {
       writeHexDigit(&TempBuffer[Pos--], C % 16);
       C /= 16;
     }
-    TempBuffer[Pos--] = 'x';
-    TempBuffer[Pos--] = '\\';
-    assert(Pos >= 0);
   }
+  TempBuffer[Pos--] = 'x';
+  assert(Pos >= 0);
+  TempBuffer[Pos--] = '\\';
   OS << StringView(&TempBuffer[Pos + 1]);
 }
 
 static void outputEscapedChar(OutputStream &OS, unsigned C) {
   switch (C) {
+  case '\0': // nul
+    OS << "\\0";
+    return;
   case '\'': // single quote
     OS << "\\\'";
     return;
@@ -1147,7 +1167,7 @@ static unsigned guessCharByteSize(const uint8_t *StringBytes, unsigned NumChars,
   // 2-byte, or 4-byte null terminator.
   if (NumBytes < 32) {
     unsigned TrailingNulls = countTrailingNullBytes(StringBytes, NumChars);
-    if (TrailingNulls >= 4)
+    if (TrailingNulls >= 4 && NumBytes % 4 == 0)
       return 4;
     if (TrailingNulls >= 2)
       return 2;
@@ -1161,7 +1181,7 @@ static unsigned guessCharByteSize(const uint8_t *StringBytes, unsigned NumChars,
   // perfect and is biased towards languages that have ascii alphabets, but this
   // was always going to be best effort since the encoding is lossy.
   unsigned Nulls = countEmbeddedNulls(StringBytes, NumChars);
-  if (Nulls >= 2 * NumChars / 3)
+  if (Nulls >= 2 * NumChars / 3 && NumBytes % 4 == 0)
     return 4;
   if (Nulls >= NumChars / 3)
     return 2;
@@ -1212,6 +1232,11 @@ Demangler::demangleStringLiteral(StringView &MangledName) {
 
   EncodedStringLiteralNode *Result = Arena.alloc<EncodedStringLiteralNode>();
 
+  // Must happen before the first `goto StringLiteralError`.
+  if (!initializeOutputStream(nullptr, nullptr, OS, 1024))
+    // FIXME: Propagate out-of-memory as an error?
+    std::terminate();
+
   // Prefix indicating the beginning of a string literal
   if (!MangledName.consumeFront("@_"))
     goto StringLiteralError;
@@ -1231,7 +1256,7 @@ Demangler::demangleStringLiteral(StringView &MangledName) {
 
   // Encoded Length
   std::tie(StringByteSize, IsNegative) = demangleNumber(MangledName);
-  if (Error || IsNegative)
+  if (Error || IsNegative || StringByteSize < (IsWcharT ? 2 : 1))
     goto StringLiteralError;
 
   // CRC 32 (always 8 characters plus a terminator)
@@ -1243,16 +1268,14 @@ Demangler::demangleStringLiteral(StringView &MangledName) {
   if (MangledName.empty())
     goto StringLiteralError;
 
-  if (!initializeOutputStream(nullptr, nullptr, OS, 1024))
-    // FIXME: Propagate out-of-memory as an error?
-    std::terminate();
   if (IsWcharT) {
     Result->Char = CharKind::Wchar;
     if (StringByteSize > 64)
       Result->IsTruncated = true;
 
     while (!MangledName.consumeFront('@')) {
-      assert(StringByteSize >= 2);
+      if (MangledName.size() < 2)
+        goto StringLiteralError;
       wchar_t W = demangleWcharLiteral(MangledName);
       if (StringByteSize != 2 || Result->IsTruncated)
         outputEscapedChar(OS, W);
@@ -1268,7 +1291,8 @@ Demangler::demangleStringLiteral(StringView &MangledName) {
 
     unsigned BytesDecoded = 0;
     while (!MangledName.consumeFront('@')) {
-      assert(StringByteSize >= 1);
+      if (MangledName.size() < 1 || BytesDecoded >= MaxStringByteLength)
+        goto StringLiteralError;
       StringBytes[BytesDecoded++] = demangleCharLiteral(MangledName);
     }
 
@@ -1308,6 +1332,7 @@ Demangler::demangleStringLiteral(StringView &MangledName) {
 
 StringLiteralError:
   Error = true;
+  std::free(OS.getBuffer());
   return nullptr;
 }
 
@@ -2039,7 +2064,7 @@ NodeArrayNode *
 Demangler::demangleFunctionParameterList(StringView &MangledName) {
   // Empty parameter list.
   if (MangledName.consumeFront('X'))
-    return {};
+    return nullptr;
 
   NodeList *Head = Arena.alloc<NodeList>();
   NodeList **Current = &Head;
@@ -2052,7 +2077,7 @@ Demangler::demangleFunctionParameterList(StringView &MangledName) {
       size_t N = MangledName[0] - '0';
       if (N >= Backrefs.FunctionParamCount) {
         Error = true;
-        return {};
+        return nullptr;
       }
       MangledName = MangledName.dropFront();
 
@@ -2083,7 +2108,7 @@ Demangler::demangleFunctionParameterList(StringView &MangledName) {
   }
 
   if (Error)
-    return {};
+    return nullptr;
 
   NodeArrayNode *NA = nodeListToNodeArray(Arena, Head, Count);
   // A non-empty parameter list is terminated by either 'Z' (variadic) parameter
@@ -2099,7 +2124,7 @@ Demangler::demangleFunctionParameterList(StringView &MangledName) {
   }
 
   Error = true;
-  return {};
+  return nullptr;
 }
 
 NodeArrayNode *

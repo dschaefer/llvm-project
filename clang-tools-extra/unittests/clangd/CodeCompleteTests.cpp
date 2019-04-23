@@ -684,6 +684,7 @@ TEST(CompletionTest, DynamicIndexIncludeInsertion) {
   ClangdServer Server(CDB, FS, DiagConsumer, Opts);
 
   FS.Files[testPath("foo_header.h")] = R"cpp(
+    #pragma once
     struct Foo {
        // Member doc
        int foo();
@@ -1386,7 +1387,7 @@ TEST(CompletionTest, NonDocComments) {
   // FIXME: Auto-completion in a template requires disabling delayed template
   // parsing.
   CDB.ExtraClangFlags.push_back("-fno-delayed-template-parsing");
-  Server.addDocument(FooCpp, Source.code(), WantDiagnostics::Yes);
+  runAddDocument(Server, FooCpp, Source.code(), WantDiagnostics::Yes);
   CodeCompleteResult Completions = cantFail(runCodeComplete(
       Server, FooCpp, Source.point(), clangd::CodeCompleteOptions()));
 

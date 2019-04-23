@@ -44,14 +44,24 @@ namespace clang {
 namespace clangd {
 namespace {
 
+// Expand a DiagnosticError to make it print-friendly (print the detailed
+// message, rather than "clang diagnostic").
+llvm::Error expandDiagnostics(llvm::Error Err, DiagnosticsEngine &DE) {
+  if (auto Diag = DiagnosticError::take(Err)) {
+    llvm::cantFail(std::move(Err));
+    SmallVector<char, 128> DiagMessage;
+    Diag->second.EmitToString(DE, DiagMessage);
+    return llvm::make_error<llvm::StringError>(DiagMessage,
+                                               llvm::inconvertibleErrorCode());
+  }
+  return Err;
+}
+
 class RefactoringResultCollector final
     : public tooling::RefactoringResultConsumer {
 public:
   void handleError(llvm::Error Err) override {
     assert(!Result.hasValue());
-    // FIXME: figure out a way to return better message for DiagnosticError.
-    // clangd uses llvm::toString to convert the Err to string, however, for
-    // DiagnosticError, only "clang diagnostic" will be generated.
     Result = std::move(Err);
   }
 
@@ -109,7 +119,7 @@ ClangdServer::ClangdServer(const GlobalCompilationDatabase &CDB,
                            const FileSystemProvider &FSProvider,
                            DiagnosticsConsumer &DiagConsumer,
                            const Options &Opts)
-    : CDB(CDB), FSProvider(FSProvider),
+    : FSProvider(FSProvider),
       DynamicIdx(Opts.BuildDynamicSymbolIndex
                      ? new FileIndex(Opts.HeavyweightDynamicSymbolIndex)
                      : nullptr),
@@ -121,7 +131,7 @@ ClangdServer::ClangdServer(const GlobalCompilationDatabase &CDB,
       // is parsed.
       // FIXME(ioeric): this can be slow and we may be able to index on less
       // critical paths.
-      WorkScheduler(Opts.AsyncThreadsCount, Opts.StorePreamblesInMemory,
+      WorkScheduler(CDB, Opts.AsyncThreadsCount, Opts.StorePreamblesInMemory,
                     llvm::make_unique<UpdateIndexCallbacks>(DynamicIdx.get(),
                                                             DiagConsumer),
                     Opts.UpdateDebounce, Opts.RetentionPolicy) {
@@ -155,12 +165,8 @@ void ClangdServer::addDocument(PathRef File, llvm::StringRef Contents,
     Opts.ClangTidyOpts = ClangTidyOptProvider->getOptions(File);
   Opts.SuggestMissingIncludes = SuggestMissingIncludes;
 
-  // FIXME: some build systems like Bazel will take time to preparing
-  // environment to build the file, it would be nice if we could emit a
-  // "PreparingBuild" status to inform users, it is non-trivial given the
-  // current implementation.
+  // Compile command is set asynchronously during update, as it can be slow.
   ParseInputs Inputs;
-  Inputs.CompileCommand = getCompileCommand(File);
   Inputs.FS = FSProvider.getFileSystem();
   Inputs.Contents = Contents;
   Inputs.Opts = std::move(Opts);
@@ -305,13 +311,15 @@ void ClangdServer::rename(PathRef File, Position Pos, llvm::StringRef NewName,
     auto Rename = clang::tooling::RenameOccurrences::initiate(
         Context, SourceRange(SourceLocationBeg), NewName);
     if (!Rename)
-      return CB(Rename.takeError());
+      return CB(expandDiagnostics(Rename.takeError(),
+                                  AST.getASTContext().getDiagnostics()));
 
     Rename->invoke(ResultCollector, Context);
 
     assert(ResultCollector.Result.hasValue());
     if (!ResultCollector.Result.getValue())
-      return CB(ResultCollector.Result->takeError());
+      return CB(expandDiagnostics(ResultCollector.Result->takeError(),
+                                  AST.getASTContext().getDiagnostics()));
 
     std::vector<TextEdit> Replacements;
     for (const tooling::AtomicChange &Change : ResultCollector.Result->get()) {
@@ -541,14 +549,6 @@ void ClangdServer::typeHierarchy(PathRef File, Position Pos, int Resolve,
   };
 
   WorkScheduler.runWithAST("Type Hierarchy", File, Bind(Action, std::move(CB)));
-}
-
-tooling::CompileCommand ClangdServer::getCompileCommand(PathRef File) {
-  trace::Span Span("GetCompileCommand");
-  llvm::Optional<tooling::CompileCommand> C = CDB.getCompileCommand(File);
-  if (!C) // FIXME: Suppress diagnostics? Let the user know?
-    C = CDB.getFallbackCommand(File);
-  return std::move(*C);
 }
 
 void ClangdServer::onFileEvent(const DidChangeWatchedFilesParams &Params) {
